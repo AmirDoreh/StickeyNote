@@ -61,7 +61,21 @@ struct DesktopNoteView: View {
             Menu {
                 Button("Open in main app", systemImage: "arrow.up.right.square") { openMainNote() }
                 Toggle("Keep above other windows", isOn: Binding(get: { desktop.isAlwaysOnTop(noteID) }, set: { desktop.setAlwaysOnTop($0, for: noteID) }))
-                Menu("Note color") { ForEach(NoteColor.allCases) { color in Button(color.name) { store.updateNote(noteID) { $0.color = color } } } }
+                Menu("Note color") {
+                    Picker("Note color", selection: Binding(
+                        get: { note.color },
+                        set: { color in store.updateNote(noteID) { $0.color = color } }
+                    )) {
+                        ForEach(NoteColor.allCases) { color in
+                            Label {
+                                Text(color.name)
+                            } icon: {
+                                Image(nsImage: NoteColorMenuSwatches.image(for: color))
+                                    .renderingMode(.original)
+                            }.labelStyle(.titleAndIcon).tag(color)
+                        }
+                    }.pickerStyle(.inline)
+                }
                 if note.isPasswordProtected && !store.isLocked(noteID) { Button("Lock note", systemImage: "lock") { store.relockNote(noteID) } }
                 Divider()
                 Button("Remove from desktop", systemImage: "xmark") { desktop.unpin(noteID) }
@@ -101,6 +115,30 @@ struct DesktopNoteView: View {
         unlocking = true
         Task { do { try await store.unlockNote(noteID, password: password); password = ""; error = nil } catch { self.error = error.localizedDescription }; unlocking = false }
     }
+}
+
+/// Native macOS menus need a non-template image to preserve the actual shade.
+@MainActor
+private enum NoteColorMenuSwatches {
+    private static let images: [String: NSImage] = Dictionary(uniqueKeysWithValues: NoteColor.allCases.map { color in
+        let rgb = UInt64(color.hex, radix: 16) ?? 0
+        let fill = NSColor(srgbRed: Double((rgb >> 16) & 255) / 255,
+                           green: Double((rgb >> 8) & 255) / 255,
+                           blue: Double(rgb & 255) / 255, alpha: 1)
+        let image = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { bounds in
+            let circle = NSBezierPath(ovalIn: bounds.insetBy(dx: 1, dy: 1))
+            fill.setFill()
+            circle.fill()
+            NSColor.black.withAlphaComponent(0.2).setStroke()
+            circle.lineWidth = 0.5
+            circle.stroke()
+            return true
+        }
+        image.isTemplate = false
+        return (color.rawValue, image)
+    })
+
+    static func image(for color: NoteColor) -> NSImage { images[color.rawValue]! }
 }
 
 struct DesktopMenu: View {
