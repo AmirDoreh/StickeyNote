@@ -1,5 +1,7 @@
 # Stickey Notes
 
+![Stickey Notes — Small notes. Room for big ideas. Featuring the app's notes board and checklist editor.](docs/images/readme-cover.png)
+
 A notes app for Mac, iPhone, iPad, and the web, with rich text, checklists, drawings, and floating desktop notes on macOS. Notes are stored locally, with optional iCloud sync through CloudKit's private database.
 
 The native apps use SwiftUI, AppKit, and UIKit. The offline-capable web app uses browser JavaScript without a framework. All clients share the same archive format.
