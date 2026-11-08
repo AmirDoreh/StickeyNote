@@ -120,7 +120,7 @@ struct DesktopMenu: View {
             Button("Hide desktop notes") { desktop.hideAll() }
             Divider()
         }
-        Button("Open all notes", systemImage: "square.grid.2x2") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
+        Button("Open all notes", systemImage: "square.grid.2x2") { openWindow(id: "main", value: MainWindowIdentity.library); NSApp.activate(ignoringOtherApps: true) }
         Button("Quit Stickey Notes") { NSApp.terminate(nil) }.keyboardShortcut("q")
     }
     private func newSticky(_ kind: NoteKind) { let id = store.createNote(kind: kind); store.selectedNoteID = nil; desktop.configure(store: store); desktop.pin(id) }

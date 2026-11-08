@@ -103,7 +103,7 @@ struct BoardView: View {
         #if os(macOS)
         .onAppear {
             FloatingNoteWindows.shared.openMainNote = { id in
-                openWindow(id: "main")
+                openWindow(id: "main", value: MainWindowIdentity.library)
                 NSApp.activate(ignoringOtherApps: true)
                 store.selectedNoteID = id
             }
