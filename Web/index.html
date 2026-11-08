@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#fafaf7">
+  <meta name="description" content="A little space for your thoughts. Beautiful sticky notes, checklists, sketches and ideas, saved as you go.">
+  <title>StickeyNote — A little space for everything</title>
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="preload" href="./vendor/manrope-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="./vendor/dm-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="Your workspace"></aside>
+    <main id="main">
+      <header class="topbar">
+        <button class="icon-button mobile-toggle" data-action="toggle-sidebar" aria-label="Toggle sidebar" id="mobile-toggle"></button>
+        <div class="breadcrumb"><span class="workspace-dot"></span> My workspace <span class="breadcrumb-divider">/</span> <span id="breadcrumb-current">All notes</span></div>
+        <div class="topbar-end"><span class="save-indicator" id="save-indicator"><span></span> Saved on this device</span><button class="icon-button" data-action="settings" title="Settings and backup" aria-label="Settings and backup" id="settings-button"></button></div>
+      </header>
+      <section class="workspace">
+        <div class="workspace-heading">
+          <div><p class="eyebrow" id="date-label"></p><h1 id="page-title">All notes<span class="title-dot">.</span></h1><p class="subtitle" id="page-subtitle">A little space for everything on your mind.</p></div>
+          <div class="create-buttons"><button class="button primary" data-action="new-note" id="new-note-button" aria-label="New note"></button><button class="button checklist-create" data-action="new-checklist" id="new-checklist-button" aria-label="New checklist"></button></div>
+        </div>
+        <div class="board-toolbar">
+          <div class="search-wrap" id="search-wrap"><input id="search" type="search" placeholder="Find a thought…" aria-label="Search notes" autocomplete="off"><kbd>⌘ K</kbd></div>
+          <div class="board-options"><label class="sort-label"><span id="sort-icon"></span><select id="sort" aria-label="Sort notes"><option value="updated">Last edited</option><option value="created">Date created</option><option value="title">Title</option><option value="color">Color</option></select></label><div class="view-switch"><button class="icon-button active" data-action="view-grid" aria-label="Grid view" id="grid-button"></button><button class="icon-button" data-action="view-list" aria-label="List view" id="list-button"></button></div></div>
+        </div>
+        <div id="active-filters" class="active-filters"></div>
+        <section id="notes-board" class="notes-board" aria-label="Notes"></section>
+        <footer class="board-footer"><span id="note-count"></span><span>Made for the things worth keeping.<span class="footer-spark">✳</span></span></footer>
+      </section>
+    </main>
+  </div>
+  <dialog id="editor-dialog" class="editor-dialog" aria-label="Edit note"></dialog>
+  <dialog id="utility-dialog" class="utility-dialog"></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <input id="import-input" type="file" accept=".json,application/json" hidden>
+  <input id="scan-input" type="file" accept="image/*" capture="environment" hidden>
+  <script src="./config.js"></script>
+  <script src="./vendor/qrcode.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
