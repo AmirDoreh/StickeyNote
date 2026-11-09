@@ -286,7 +286,7 @@ struct NoteCard: View {
                     if note.content.items.count > 5 { Text("+ \(note.content.items.count - 5) more").font(.system(size: 10)).foregroundStyle(Palette.ink.opacity(0.5)) }
                 }
             } else {
-                Text(note.content.text).noteFont(note.font, size: 13).lineSpacing(6).lineLimit(compact ? 3 : note.content.strokes.isEmpty ? 7 : 3).foregroundStyle(Palette.ink.opacity(0.83))
+                Text(linkedPreview).noteFont(note.font, size: 13).lineSpacing(6).lineLimit(compact ? 3 : note.content.strokes.isEmpty ? 7 : 3).foregroundStyle(Palette.ink.opacity(0.83))
                 if !note.content.strokes.isEmpty && !compact { DrawingPreview(strokes: note.content.strokes).frame(height: 65) }
             }
             Spacer(minLength: 0)
@@ -304,6 +304,19 @@ struct NoteCard: View {
             .shadow(color: Palette.ink.opacity(hovering ? 0.09 : 0.025), radius: hovering ? 12 : 4, x: 0, y: hovering ? 5 : 2)
             .contentShape(RoundedRectangle(cornerRadius: 15)).onTapGesture(perform: onOpen).onHover { hovering = $0 }
             .accessibilityElement(children: .contain)
+    }
+
+    private var linkedPreview: AttributedString {
+        var value = AttributedString(note.content.text)
+        for match in NoteLinks.detectedLinks(in: note.content.text) {
+            guard let range = Range(match.range, in: note.content.text),
+                  let lower = AttributedString.Index(range.lowerBound, within: value),
+                  let upper = AttributedString.Index(range.upperBound, within: value) else { continue }
+            value[lower..<upper].link = match.url
+            value[lower..<upper].foregroundColor = .blue
+            value[lower..<upper].underlineStyle = .single
+        }
+        return value
     }
 }
 

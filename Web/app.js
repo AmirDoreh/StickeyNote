@@ -1,5 +1,6 @@
 import { NoteStore, COLORS, FONTS, AUTO_LOCK_OPTIONS } from './core.js';
 import { createCloudSync } from './cloud.js';
+import { linkedTextHTML, safeLinkURL, updateAutomaticLinks } from './links.js';
 
 const paths = {
   plus:'M12 5v14M5 12h14', note:'M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9l5-5V5a2 2 0 0 0-2-2h-4Zm1 18v-5h5M8 8h8M8 12h6',
@@ -104,7 +105,7 @@ function renderBoard() {
 function noteCard(note) {
   const locked = store.isLocked(note.id), color = colorFor(note), group = store.groups.find(group => group.id === note.groupID);
   const items = note.content.items || [], completed = items.filter(item => item.isCompleted).length;
-  let preview = locked ? `<div class="locked-card"><p>${icon('lock',22)}<br>Locked · Private note</p><button class="button small" data-action="unlock" data-id="${note.id}">${icon('unlock',14)} Unlock</button></div>` : note.kind === 'checklist' ? `<ul class="card-checklist">${items.slice(0,4).map(item => `<li><button class="card-checkbox ${item.isCompleted ? 'done' : ''}" data-action="toggle-check" data-id="${note.id}" data-item="${item.id}" aria-label="${item.isCompleted ? 'Uncheck' : 'Check'} ${attr(item.text)}">${item.isCompleted ? icon('check',11) : ''}</button><span class="${item.isCompleted ? 'done-text' : ''}">${escape(item.text || 'An empty thought')}</span></li>`).join('')}${items.length > 4 ? `<li class="more-items">+ ${items.length-4} more</li>` : ''}</ul>` : `<p class="note-preview">${escape(note.content.text || 'A blank page, full of possibilities.')}</p>`;
+  let preview = locked ? `<div class="locked-card"><p>${icon('lock',22)}<br>Locked · Private note</p><button class="button small" data-action="unlock" data-id="${note.id}">${icon('unlock',14)} Unlock</button></div>` : note.kind === 'checklist' ? `<ul class="card-checklist">${items.slice(0,4).map(item => `<li><button class="card-checkbox ${item.isCompleted ? 'done' : ''}" data-action="toggle-check" data-id="${note.id}" data-item="${item.id}" aria-label="${item.isCompleted ? 'Uncheck' : 'Check'} ${attr(item.text)}">${item.isCompleted ? icon('check',11) : ''}</button><span class="${item.isCompleted ? 'done-text' : ''}">${linkedTextHTML(item.text || 'An empty thought')}</span></li>`).join('')}${items.length > 4 ? `<li class="more-items">+ ${items.length-4} more</li>` : ''}</ul>` : `<p class="note-preview">${linkedTextHTML(note.content.text || 'A blank page, full of possibilities.')}</p>`;
   if (!locked && note.content.strokes?.length) preview += `<svg class="note-drawing" viewBox="0 0 300 65" aria-label="A sketch">${note.content.strokes.slice(-15).map(stroke => `<polyline points="${stroke.points.map(p => `${p.x*300},${p.y*65}`).join(' ')}" fill="none" stroke="#${/^[a-f\d]{6}$/i.test(stroke.color) ? stroke.color : '333333'}" stroke-width="${Math.min(7,Math.max(1,stroke.width))}"/>`).join('')}</svg>`;
   return `<article class="note-card" style="background:#${color.hex.replace('#','')}" role="button" tabindex="0" draggable="true" data-note="${note.id}" aria-label="Open ${attr(noteTitle(note))}"><div class="note-topline"><span class="note-group-tag">${escape(group?.name || (note.kind === 'checklist' ? 'Checklist' : 'Note'))}</span>${note.isPinned ? `<span class="pin-mark">${icon('pin',12)}</span>` : ''}</div><div class="note-actions"><button class="icon-button" data-action="pin" data-id="${note.id}" aria-label="${note.isPinned ? 'Unpin' : 'Pin'} note">${icon('pin',13)}</button><button class="icon-button" data-action="note-menu" data-id="${note.id}" aria-label="Note actions">${icon('more',17)}</button></div><h2 class="note-title">${escape(noteTitle(note))}</h2>${preview}<div class="note-bottom"><span class="note-bottom-left">${note.isPasswordProtected || note.encryptedContent ? icon('lock',11) : icon(note.kind === 'checklist' ? 'checklist' : 'note',11)}${escape(timeAgo(note.updatedAt))}</span>${note.kind === 'checklist' && !locked ? `<span style="display:flex;gap:6px;align-items:center">${completed}/${items.length}<span class="progress-bar"><i style="width:${items.length ? completed/items.length*100 : 0}%"></i></span></span>` : note.content.strokes?.length && !locked ? icon('draw',12) : ''}</div></article>`;
 }
@@ -115,13 +116,13 @@ function sanitizeHTML(value) {
   for (const element of [...documentCopy.body.querySelectorAll('*')]) {
     if (['SCRIPT','STYLE','IFRAME','OBJECT','EMBED','IMG','SVG','MATH'].includes(element.tagName)) { element.remove(); continue; }
     if (!allowed.has(element.tagName)) { element.replaceWith(...element.childNodes); continue; }
-    const style = element.getAttribute('style') || '', href = element.getAttribute('href');
+    const style = element.getAttribute('style') || '', href = safeLinkURL(element.getAttribute('href')), automatic = element.getAttribute('data-auto-link') === 'true';
     for (const attribute of [...element.attributes]) element.removeAttribute(attribute.name);
     if (style) {
       const safe = style.split(';').filter(property => /^(font-weight|font-style|text-decoration|text-align)\s*:/i.test(property.trim()) && !/url|expression|[<>]/i.test(property)).join(';');
       if (safe) element.setAttribute('style',safe);
     }
-    if (element.tagName === 'A' && href && /^https?:\/\//i.test(href)) { element.setAttribute('href',href); element.setAttribute('rel','noopener noreferrer'); element.setAttribute('target','_blank'); }
+    if (element.tagName === 'A' && href) { element.setAttribute('href',href); element.setAttribute('rel','noopener noreferrer'); element.setAttribute('target','_blank'); if (automatic) element.setAttribute('data-auto-link','true'); }
   }
   return documentCopy.body.innerHTML;
 }
@@ -136,6 +137,7 @@ function renderEditor() {
     ${note.kind === 'text' ? richToolbar(note) + `<div id="note-content" class="note-content" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Note text" spellcheck="true" style="font-family:${attr(fontFor(note).family || 'inherit')};font-size:${note.fontSize}px">${note.content.richHTML ? sanitizeHTML(note.content.richHTML) : escape(note.content.text).replace(/\n/g,'<br>')}</div>` : `<div class="editor-list" id="editor-list">${checklistRows(note)}</div><button class="add-item" data-action="add-item">${icon('plus',17)} Add a little to-do</button>`}
     <div id="drawing-area">${drawingVisible ? drawingMarkup() : note.content.strokes?.length ? '<canvas id="drawing-preview" class="drawing-canvas" style="height:140px;border:0;margin-top:20px;cursor:pointer" aria-label="Note sketch — click to edit"></canvas>' : ''}</div></div>
     <div class="editor-footer"><span id="editor-stats">${note.encryptedContent ? 'Encrypted · ' : ''}${note.kind === 'checklist' ? `${note.content.items.filter(item=>item.isCompleted).length} of ${note.content.items.length} completed` : `${note.content.text.trim().split(/\s+/).filter(Boolean).length} words`} · Saved as you go</span><div class="footer-actions"><button data-action="draw">${icon('draw',14)} ${drawingVisible ? 'Done drawing' : 'Make a sketch'}</button><button class="icon-button" data-action="share" title="Export note" aria-label="Export note">${icon('share',15)}</button></div></div>`}</div>`;
+  updateAutomaticLinks($('#note-content'));
   if (!locked && drawingVisible) setupDrawing();
   else if (!locked && note.content.strokes?.length) { drawStrokes($('#drawing-preview'), note.content.strokes); $('#drawing-preview').addEventListener('click',()=>{drawingVisible=true;renderEditor();}); }
 }
@@ -145,7 +147,7 @@ function richToolbar(note) {
 function checklistRows(note) {
   return note.content.items.map((item,index)=>`<div class="checklist-row ${item.isCompleted?'completed':''}" data-item="${item.id}"><button class="check-toggle" data-action="editor-toggle" data-item="${item.id}" aria-label="${item.isCompleted?'Uncheck':'Check'} item">${item.isCompleted?icon('check',14):''}</button><input data-check-input="${item.id}" value="${attr(item.text)}" placeholder="Something to do…" aria-label="Checklist item ${index+1}"><div class="row-actions"><button data-action="item-up" data-item="${item.id}" aria-label="Move item up" ${index===0?'disabled':''}>${icon('up',13)}</button><button data-action="item-down" data-item="${item.id}" aria-label="Move item down" ${index===note.content.items.length-1?'disabled':''}>${icon('down',13)}</button><button data-action="item-delete" data-item="${item.id}" aria-label="Remove item">${icon('close',13)}</button></div></div>`).join('');
 }
-async function saveRichText() { const field=$('#note-content'); if (!field || !currentNote()) return; await store.updateNote(editorID,note=>{note.content.text=field.innerText;note.content.richHTML=sanitizeHTML(field.innerHTML);note.content.richText=null;});const stats=$('#editor-stats');if(stats)stats.textContent=`${currentNote().encryptedContent?'Encrypted · ':''}${currentNote().content.text.trim().split(/\s+/).filter(Boolean).length} words · Saved as you go`; }
+async function saveRichText(detectLinks=true) { const field=$('#note-content'); if (!field || !currentNote()) return; if (detectLinks) updateAutomaticLinks(field); await store.updateNote(editorID,note=>{note.content.text=field.innerText;note.content.richHTML=sanitizeHTML(field.innerHTML);note.content.richText=null;});const stats=$('#editor-stats');if(stats)stats.textContent=`${currentNote().encryptedContent?'Encrypted · ':''}${currentNote().content.text.trim().split(/\s+/).filter(Boolean).length} words · Saved as you go`; }
 
 function showModal(title, html, {submit, handler, cancel='Close', afterOpen, noteID=null, onCancel}={}) {
   retireModalSession();
@@ -274,6 +276,8 @@ async function scanImage(file) {
 }
 
 document.addEventListener('click',async event=>{
+  const link=event.target.closest('.note-content a[href],.note-preview a[href],.card-checklist a[href]');
+  if(link){event.preventDefault();event.stopPropagation();const href=safeLinkURL(link.getAttribute('href'));if(href)window.open(href,'_blank','noopener,noreferrer');return;}
   const command=event.target.closest('[data-command]');if(command){event.preventDefault();$('#note-content')?.focus();document.execCommand(command.dataset.command,false,null);await saveRichText();return;}
   const target=event.target.closest('[data-action]');
   if(!target){const card=event.target.closest('[data-note]');if(card)openNote(card.dataset.note);return;}
@@ -318,7 +322,8 @@ document.addEventListener('click',async event=>{
   }}catch(error){report(error);}
 });
 document.addEventListener('pointerdown',event=>{if(event.target.closest('[data-command]'))event.preventDefault();});
-document.addEventListener('input',async event=>{try{if(event.target.id==='note-title')await store.updateNote(editorID,n=>n.content.title=event.target.value);else if(event.target.id==='note-content')await saveRichText();else if(event.target.dataset.checkInput){const item=event.target.dataset.checkInput,value=event.target.value;await store.updateNote(editorID,n=>{const row=n.content.items.find(row=>row.id===item);if(row)row.text=value;});}}catch(error){report(error);}});
+document.addEventListener('input',async event=>{try{if(event.target.id==='note-title')await store.updateNote(editorID,n=>n.content.title=event.target.value);else if(event.target.id==='note-content')await saveRichText(!event.isComposing);else if(event.target.dataset.checkInput){const item=event.target.dataset.checkInput,value=event.target.value;await store.updateNote(editorID,n=>{const row=n.content.items.find(row=>row.id===item);if(row)row.text=value;});}}catch(error){report(error);}});
+document.addEventListener('compositionend',event=>{if(event.target.id==='note-content')saveRichText().catch(report);});
 document.addEventListener('change',async event=>{try{if(event.target.id==='font-select'){await store.updateNote(editorID,n=>n.font=event.target.value);$('#note-content').style.fontFamily=fontFor(currentNote()).family||'inherit';}else if(event.target.id==='font-size'){await store.updateNote(editorID,n=>n.fontSize=Number(event.target.value));$('#note-content').style.fontSize=`${event.target.value}px`;}}catch(error){report(error);}});
 $('#search').addEventListener('input',event=>{query=event.target.value;visibleLimit=60;scheduleRender();});
 $('#sort').addEventListener('change',event=>{sort=event.target.value;scheduleRender();});
@@ -327,6 +332,7 @@ $('#scan-input').onchange=event=>{scanImage(event.target.files[0]);event.target.
 document.addEventListener('paste',event=>{if(event.target.closest('#note-content')){event.preventDefault();document.execCommand('insertText',false,event.clipboardData.getData('text/plain'));saveRichText();}});
 document.addEventListener('keydown',event=>{
   const mod=event.metaKey||event.ctrlKey;
+  if(event.key==='Enter'&&event.target.matches('.note-content a[href]')){event.preventDefault();event.target.click();return;}
   if(mod&&['n','t','k','f'].includes(event.key.toLowerCase())){event.preventDefault();if(utility.open)return;if(event.key.toLowerCase()==='n'||event.key.toLowerCase()==='t')openNote(store.createNote(event.key.toLowerCase()==='t'?'checklist':'text'));else{editor.close();$('#search').focus();}}
   if(event.target.matches('[data-note],[data-filter]')&&(event.key==='Enter'||event.key===' ')){event.preventDefault();event.target.click();}
   if(event.target.dataset.checkInput){const item=event.target.dataset.checkInput;if(event.key==='Enter'&&!mod){event.preventDefault();$('[data-action="add-item"]').click();}if(mod&&event.key==='Enter'){event.preventDefault();$(`[data-action="editor-toggle"][data-item="${item}"]`).click();}if(mod&&(event.key==='ArrowUp'||event.key==='ArrowDown')){event.preventDefault();$(`[data-action="${event.key==='ArrowUp'?'item-up':'item-down'}"][data-item="${item}"]`).click();}}

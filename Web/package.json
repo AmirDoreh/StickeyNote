@@ -1,1 +1,1 @@
-{"name":"stickeynote-web","private":true,"type":"module","scripts":{"build":"node build.mjs","test":"node --test test.mjs cloud.test.mjs","start":"python3 -m http.server 5173"}}
+{"name":"stickeynote-web","private":true,"type":"module","scripts":{"build":"node build.mjs","test":"node --test test.mjs cloud.test.mjs links.test.mjs","start":"python3 -m http.server 5173"}}

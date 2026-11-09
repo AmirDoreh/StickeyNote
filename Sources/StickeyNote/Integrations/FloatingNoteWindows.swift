@@ -207,7 +207,10 @@ final class FloatingNoteWindows: NSObject, ObservableObject, NSWindowDelegate {
             panel.hasShadow = true
             panel.minSize = NSSize(width: 220, height: 180)
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .canJoinAllApplications]
-            panel.contentView = DesktopNoteHostingView(rootView: DesktopNoteView(store: store, noteID: id))
+            let hostingView = DesktopNoteHostingView(rootView: DesktopNoteView(store: store, noteID: id))
+            // The card draws its own header, so the hidden title bar needs no inset.
+            hostingView.safeAreaRegions = []
+            panel.contentView = hostingView
             panel.delegate = self
             panels[id] = panel
             if let saved = savedFrames[id.uuidString], validFrame(NSRectFromString(saved)) {

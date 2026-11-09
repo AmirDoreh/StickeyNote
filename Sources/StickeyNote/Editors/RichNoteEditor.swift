@@ -111,7 +111,13 @@ private struct NativeRichTextEditor: NSViewRepresentable {
         view.textColor = NSColor(calibratedWhite: 0.14, alpha: 1)
         view.insertionPointColor = NSColor(calibratedWhite: 0.14, alpha: 1)
         view.isAutomaticSpellingCorrectionEnabled = true
-        view.isAutomaticLinkDetectionEnabled = true
+        // Refresh links ourselves so saved text and URLs without a trailing space
+        // behave just like newly typed links.
+        view.isAutomaticLinkDetectionEnabled = false
+        view.linkTextAttributes = [.foregroundColor: NSColor.systemBlue,
+                                   .underlineStyle: NSUnderlineStyle.single.rawValue,
+                                   .cursor: NSCursor.pointingHand]
+        view.displaysLinkToolTips = true
         view.isVerticallyResizable = true
         view.isHorizontallyResizable = false
         view.autoresizingMask = [.width]
@@ -181,9 +187,11 @@ private struct NativeRichTextEditor: NSViewRepresentable {
             } else {
                 view.textStorage?.setAttributedString(NSAttributedString(string: parent.text, attributes: [.font: baseFont, .foregroundColor: NSColor(calibratedWhite: 0.14, alpha: 1)]))
             }
+            if let storage = view.textStorage { NoteLinks.refresh(in: storage) }
             let count = (view.string as NSString).length
             view.setSelectedRange(NSRange(location: min(range.location, count), length: min(range.length, max(0, count - min(range.location, count)))))
             view.typingAttributes[.font] = baseFont
+            view.typingAttributes = NoteLinks.typingAttributes(from: view.typingAttributes)
             lastData = parent.richText
             lastHTML = parent.richHTML
             lastFontName = parent.font.rawValue
@@ -209,8 +217,19 @@ private struct NativeRichTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) { if !isUpdating { publish() } }
 
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            if let url = NoteLinks.safeURL(link) { NSWorkspace.shared.open(url) }
+            return true
+        }
+
         func publish() {
-            guard let view = editor, let storage = view.textStorage else { return }
+            guard !isUpdating, let view = editor, let storage = view.textStorage else { return }
+            isUpdating = true
+            defer { isUpdating = false }
+            if !view.hasMarkedText() {
+                NoteLinks.refresh(in: storage)
+                view.typingAttributes = NoteLinks.typingAttributes(from: view.typingAttributes)
+            }
             let data = try? storage.data(from: NSRange(location: 0, length: storage.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
             let html = RichHTMLBridge.encode(storage)
             lastData = data
@@ -290,6 +309,11 @@ private struct NativeRichTextEditor: UIViewRepresentable {
         view.keyboardDismissMode = .interactive
         view.accessibilityLabel = "Note text"
         view.tintColor = .darkGray
+        view.linkTextAttributes = [.foregroundColor: UIColor.systemBlue,
+                                   .underlineStyle: NSUnderlineStyle.single.rawValue]
+        let linkTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.openLink(_:)))
+        linkTap.delegate = context.coordinator
+        view.addGestureRecognizer(linkTap)
         context.coordinator.editor = view
         context.coordinator.replaceContent()
         return view
@@ -310,7 +334,7 @@ private struct NativeRichTextEditor: UIViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, UITextViewDelegate {
+    final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
         var parent: NativeRichTextEditor
         weak var editor: UITextView?
         var lastData: Data?
@@ -318,6 +342,7 @@ private struct NativeRichTextEditor: UIViewRepresentable {
         var lastCommand: UUID?
         var lastFontName: String?
         var lastFontSize: Double = 0
+        var isUpdating = false
         init(_ parent: NativeRichTextEditor) { self.parent = parent }
         var baseFont: UIFont {
             let system = UIFont.systemFont(ofSize: parent.fontSize)
@@ -331,6 +356,8 @@ private struct NativeRichTextEditor: UIViewRepresentable {
 
         func replaceContent() {
             guard let view = editor else { return }
+            isUpdating = true
+            defer { isUpdating = false }
             let range = view.selectedRange
             if let data = parent.richText,
                let value = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil), value.string == parent.text {
@@ -338,9 +365,11 @@ private struct NativeRichTextEditor: UIViewRepresentable {
             } else if let html = parent.richHTML, let value = RichHTMLBridge.decode(html, matching: parent.text, font: baseFont) {
                 view.attributedText = value
             } else { view.attributedText = NSAttributedString(string: parent.text, attributes: [.font: baseFont, .foregroundColor: UIColor(white: 0.14, alpha: 1)]) }
+            NoteLinks.refresh(in: view.textStorage)
             let count = (view.text as NSString).length
             view.selectedRange = NSRange(location: min(range.location, count), length: min(range.length, max(0, count - min(range.location, count))))
             view.typingAttributes[.font] = baseFont
+            view.typingAttributes = NoteLinks.typingAttributes(from: view.typingAttributes)
             lastData = parent.richText
             lastHTML = parent.richHTML
             lastFontName = parent.font.rawValue
@@ -365,8 +394,42 @@ private struct NativeRichTextEditor: UIViewRepresentable {
 
         func textViewDidChange(_ textView: UITextView) { publish() }
 
+        private func link(at point: CGPoint, in view: UITextView) -> URL? {
+            let point = CGPoint(x: point.x - view.textContainerInset.left, y: point.y - view.textContainerInset.top)
+            let layout = view.layoutManager
+            let glyph = layout.glyphIndex(for: point, in: view.textContainer)
+            guard glyph < layout.numberOfGlyphs,
+                  layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: view.textContainer).contains(point) else { return nil }
+            let index = layout.characterIndexForGlyph(at: glyph)
+            guard index < view.textStorage.length else { return nil }
+            return NoteLinks.safeURL(view.textStorage.attribute(.link, at: index, effectiveRange: nil))
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let view = editor, view.markedTextRange == nil else { return false }
+            return link(at: gestureRecognizer.location(in: view), in: view) != nil
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            // UIKit may install selection gestures lazily. Give double-tap word
+            // selection priority so a URL can still be selected for editing.
+            (otherGestureRecognizer as? UITapGestureRecognizer)?.numberOfTapsRequired ?? 0 > 1
+        }
+
+        @objc func openLink(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended, let view = editor,
+                  let url = link(at: gesture.location(in: view), in: view) else { return }
+            UIApplication.shared.open(url)
+        }
+
         func publish() {
-            guard let view = editor else { return }
+            guard !isUpdating, let view = editor else { return }
+            isUpdating = true
+            defer { isUpdating = false }
+            if view.markedTextRange == nil {
+                NoteLinks.refresh(in: view.textStorage)
+                view.typingAttributes = NoteLinks.typingAttributes(from: view.typingAttributes)
+            }
             let data = try? view.attributedText.data(from: NSRange(location: 0, length: view.attributedText.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
             let html = RichHTMLBridge.encode(view.attributedText)
             lastData = data

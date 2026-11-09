@@ -32,7 +32,13 @@ enum RichHTMLBridge {
             if (attributes[.strikethroughStyle] as? Int ?? 0) != 0 { decorations.append("line-through") }
             if !decorations.isEmpty { styles.append("text-decoration:\(decorations.joined(separator: " "))") }
             let text = escape((value.string as NSString).substring(with: range)).replacingOccurrences(of: "\n", with: "<br>")
-            html += styles.isEmpty ? text : "<span style=\"\(styles.joined(separator: ";"))\">\(text)</span>"
+            let formatted = styles.isEmpty ? text : "<span style=\"\(styles.joined(separator: ";"))\">\(text)</span>"
+            if let url = NoteLinks.safeURL(attributes[.link]) {
+                let automatic = attributes[NoteLinks.automaticLink] != nil ? " data-auto-link=\"true\"" : ""
+                html += "<a href=\"\(escape(url.absoluteString))\"\(automatic)>\(formatted)</a>"
+            } else {
+                html += formatted
+            }
         }
         return html
     }
@@ -68,11 +74,20 @@ enum RichHTMLBridge {
                 if ["p", "div", "li"].contains(tag), !result.string.hasSuffix("\n") { append("\n") }
                 continue
             }
-            guard ["b", "strong", "i", "em", "u", "s", "strike", "del", "span", "p", "div", "li", "ul", "ol"].contains(tag) else { continue }
+            guard ["a", "b", "strong", "i", "em", "u", "s", "strike", "del", "span", "p", "div", "li", "ul", "ol"].contains(tag) else { continue }
             if ["p", "div", "li"].contains(tag), result.length > 0, !result.string.hasSuffix("\n") { append("\n") }
             stack.append((tag, attributes))
-            let bold = ["b", "strong"].contains(tag) || lower.range(of: "font-weight\\s*:\\s*(bold|[6-9]00)", options: .regularExpression) != nil
-            let italic = ["i", "em"].contains(tag) || lower.range(of: "font-style\\s*:\\s*italic", options: .regularExpression) != nil
+            if tag == "a" {
+                attributes.removeValue(forKey: .link)
+                attributes.removeValue(forKey: NoteLinks.automaticLink)
+                if let url = NoteLinks.safeURL(attribute("href", in: token)) {
+                    attributes[.link] = url
+                    if attribute("data-auto-link", in: token) == "true" { attributes[NoteLinks.automaticLink] = true }
+                }
+            }
+            let style = attribute("style", in: token)?.lowercased() ?? ""
+            let bold = ["b", "strong"].contains(tag) || style.range(of: "font-weight\\s*:\\s*(bold|[6-9]00)", options: .regularExpression) != nil
+            let italic = ["i", "em"].contains(tag) || style.range(of: "font-style\\s*:\\s*italic", options: .regularExpression) != nil
             let oldFont = attributes[.font] as? HTMLFont ?? font
             #if os(macOS)
             var traits = NSFontManager.shared.traits(of: oldFont)
@@ -85,8 +100,8 @@ enum RichHTMLBridge {
             if italic { traits.insert(.traitItalic) }
             attributes[.font] = UIFont(descriptor: oldFont.fontDescriptor.withSymbolicTraits(traits) ?? oldFont.fontDescriptor, size: oldFont.pointSize)
             #endif
-            if tag == "u" || lower.contains("underline") { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
-            if ["s", "strike", "del"].contains(tag) || lower.contains("line-through") { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            if tag == "u" || style.contains("underline") { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+            if ["s", "strike", "del"].contains(tag) || style.contains("line-through") { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
         }
         // Browsers frequently append one paragraph newline to contenteditable.
         while result.string.hasSuffix("\n") && result.length > (text as NSString).length { result.deleteCharacters(in: NSRange(location: result.length - 1, length: 1)) }
@@ -97,6 +112,16 @@ enum RichHTMLBridge {
     private static func escape(_ value: String) -> String {
         value.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
+    }
+
+    private static func attribute(_ name: String, in token: String) -> String? {
+        let pattern = "(?i)\\s" + NSRegularExpression.escapedPattern(for: name) + "\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: token, range: NSRange(token.startIndex..., in: token)) else { return nil }
+        for index in 1...3 where match.range(at: index).location != NSNotFound {
+            return unescape((token as NSString).substring(with: match.range(at: index)))
+        }
+        return nil
     }
 
     private static func unescape(_ value: String) -> String {
@@ -111,5 +136,82 @@ enum RichHTMLBridge {
         return result.replacingOccurrences(of: "&nbsp;", with: "\u{00A0}").replacingOccurrences(of: "&lt;", with: "<")
             .replacingOccurrences(of: "&gt;", with: ">").replacingOccurrences(of: "&quot;", with: "\"")
             .replacingOccurrences(of: "&apos;", with: "'").replacingOccurrences(of: "&amp;", with: "&")
+    }
+}
+
+/// Link attributes are derived from the current text, so editing a URL cannot
+/// leave an outdated destination attached to it. Display styling belongs to the
+/// text view's linkTextAttributes and never replaces the user's own formatting.
+enum NoteLinks {
+    static let automaticLink = NSAttributedString.Key("StickeyAutomaticLink")
+    private static let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+
+    static func typingAttributes(from attributes: [NSAttributedString.Key: Any]) -> [NSAttributedString.Key: Any] {
+        var result = attributes
+        result.removeValue(forKey: .link)
+        result.removeValue(forKey: automaticLink)
+        return result
+    }
+
+    static func safeURL(_ value: Any?) -> URL? {
+        let raw: String
+        if let url = value as? URL { raw = url.absoluteString }
+        else if let string = value as? String { raw = string }
+        else { return nil }
+        guard !raw.isEmpty, raw.rangeOfCharacter(from: .whitespacesAndNewlines.union(.controlCharacters)) == nil else { return nil }
+        let normalized = raw.lowercased().hasPrefix("www.") ? "https://" + raw : raw
+        guard let url = URL(string: normalized), let scheme = url.scheme?.lowercased() else { return nil }
+        switch scheme {
+        case "http", "https": return url.host?.isEmpty == false ? url : nil
+        case "mailto": return url.path.isEmpty ? nil : url
+        default: return nil
+        }
+    }
+
+    static func detectedLinks(in text: String) -> [(range: NSRange, url: URL)] {
+        let source = text as NSString
+        return (detector?.matches(in: text, range: NSRange(location: 0, length: source.length)) ?? []).compactMap { match in
+            guard let detectedURL = match.url else { return nil }
+            let displayed = source.substring(with: match.range)
+            // Data detectors default schemeless websites to HTTP; prefer HTTPS.
+            let candidate: Any = detectedURL.scheme?.lowercased() == "http" && !displayed.lowercased().hasPrefix("http://")
+                ? "https://" + displayed : detectedURL
+            guard let url = safeURL(candidate) else { return nil }
+            return (match.range, url)
+        }
+    }
+
+    static func refresh(in storage: NSMutableAttributedString) {
+        guard storage.length > 0 else { return }
+        let fullRange = NSRange(location: 0, length: storage.length)
+        let text = storage.string as NSString
+        var explicitLinks: [(range: NSRange, url: URL)] = []
+        storage.enumerateAttribute(.link, in: fullRange) { value, range, _ in
+            guard let url = safeURL(value) else { return }
+            var automatic = false
+            storage.enumerateAttribute(automaticLink, in: range) { marker, _, _ in
+                if marker != nil { automatic = true }
+            }
+            // RTF does not preserve custom attributes. A URL used as its own
+            // label is still an automatic link when that archive is reopened.
+            if !automatic {
+                let label = text.substring(with: range)
+                automatic = detectedLinks(in: label).contains {
+                    $0.range == NSRange(location: 0, length: (label as NSString).length) && $0.url == url
+                }
+            }
+            if !automatic { explicitLinks.append((range, url)) }
+        }
+        let detected = detectedLinks(in: storage.string).filter { match in
+            !explicitLinks.contains { NSIntersectionRange($0.range, match.range).length > 0 }
+        }
+        storage.beginEditing()
+        storage.removeAttribute(.link, range: fullRange)
+        storage.removeAttribute(automaticLink, range: fullRange)
+        for link in explicitLinks { storage.addAttribute(.link, value: link.url, range: link.range) }
+        for link in detected {
+            storage.addAttributes([.link: link.url, automaticLink: true], range: link.range)
+        }
+        storage.endEditing()
     }
 }
