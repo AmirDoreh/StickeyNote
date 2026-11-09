@@ -5,7 +5,7 @@ struct ChecklistEditor: View {
     @Binding var items: [ChecklistItem]
     var fontSize: Double = 18
     var font: NoteFont = .system
-    @FocusState private var focusedItem: UUID?
+    @State private var focusedItem: UUID?
 
     private var completedCount: Int { items.filter(\.isCompleted).count }
 
@@ -40,19 +40,25 @@ struct ChecklistEditor: View {
                 .accessibilityValue("\(completedCount) of \(items.count)")
             }
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(items) { item in
-                        checklistRow(item)
-                            .draggable(item.id.uuidString)
-                            .dropDestination(for: String.self) { values, _ in
-                                guard let value = values.first, let id = UUID(uuidString: value),
-                                      let from = items.firstIndex(where: { $0.id == id }),
-                                      let to = items.firstIndex(where: { $0.id == item.id }), from != to else { return false }
-                                items.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
-                                return true
-                            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(items) { item in
+                            checklistRow(item)
+                                .id(item.id)
+                                .draggable(item.id.uuidString)
+                                .dropDestination(for: String.self) { values, _ in
+                                    guard let value = values.first, let id = UUID(uuidString: value),
+                                          let from = items.firstIndex(where: { $0.id == id }),
+                                          let to = items.firstIndex(where: { $0.id == item.id }), from != to else { return false }
+                                    items.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+                                    return true
+                                }
+                        }
                     }
+                }
+                .onChange(of: focusedItem) { _, id in
+                    if let id { proxy.scrollTo(id) }
                 }
             }
             .frame(minHeight: 100, maxHeight: .infinity)
@@ -67,7 +73,6 @@ struct ChecklistEditor: View {
             .buttonStyle(.plain)
         }
         .foregroundStyle(Color.black.opacity(0.83))
-        .background { shortcutButtons }
     }
 
     private func checklistRow(_ item: ChecklistItem) -> some View {
@@ -85,19 +90,14 @@ struct ChecklistEditor: View {
             .accessibilityLabel(item.isCompleted ? "Mark incomplete" : "Mark complete")
             .accessibilityValue(item.text)
 
-            TextField("New item", text: textBinding(for: item.id), axis: .vertical)
-                .font(checklistFont)
-                .textFieldStyle(.plain)
-                .strikethrough(item.isCompleted)
-                .foregroundStyle(Color.black.opacity(item.isCompleted ? 0.37 : 0.83))
-                .focused($focusedItem, equals: item.id)
-                .onSubmit { addItem(after: item.id) }
-                .onKeyPress(keys: [.return], phases: .down) { event in
-                    guard !event.modifiers.contains(.shift), !event.modifiers.contains(.command) else { return .ignored }
-                    addItem(after: item.id)
-                    return .handled
-                }
-                .accessibilityLabel("Checklist item")
+            ChecklistTextEditor(text: textBinding(for: item.id), font: font, fontSize: fontSize,
+                                isCompleted: item.isCompleted, isFocused: focusBinding(for: item.id),
+                                onSubmit: { addItem(after: item.id) },
+                                onDeleteEmpty: { removeEmptyItem(item.id) },
+                                onMove: { move(item.id, by: $0) },
+                                onToggle: {
+                                    if let index = items.firstIndex(where: { $0.id == item.id }) { items[index].isCompleted.toggle() }
+                                })
 
             Menu {
                 Button("Move up", systemImage: "arrow.up") { move(item.id, by: -1) }
@@ -128,13 +128,11 @@ struct ChecklistEditor: View {
         })
     }
 
-    private var checklistFont: Font {
-        switch font {
-        case .rounded: return .system(size: fontSize, design: .rounded)
-        case .serif: return .system(size: fontSize, design: .serif)
-        case .mono: return .system(size: fontSize, design: .monospaced)
-        default: return font.familyName.map { .custom($0, size: fontSize) } ?? .system(size: fontSize)
-        }
+    private func focusBinding(for id: UUID) -> Binding<Bool> {
+        Binding(get: { focusedItem == id }, set: { focused in
+            if focused { focusedItem = id }
+            else if focusedItem == id { focusedItem = nil }
+        })
     }
 
     private func addItem(after id: UUID?) {
@@ -144,25 +142,18 @@ struct ChecklistEditor: View {
         focusedItem = item.id
     }
 
+    private func removeEmptyItem(_ id: UUID) -> Bool {
+        guard let index = items.firstIndex(where: { $0.id == id }), items[index].text.isEmpty else { return false }
+        let nextFocus = index > 0 ? items[index - 1].id : items.dropFirst().first?.id
+        items.remove(at: index)
+        focusedItem = nextFocus
+        return true
+    }
+
     private func move(_ id: UUID, by offset: Int) {
         guard let index = items.firstIndex(where: { $0.id == id }), items.indices.contains(index + offset) else { return }
         items.swapAt(index, index + offset)
         focusedItem = id
     }
 
-    private var shortcutButtons: some View {
-        HStack {
-            Button("") { if let focusedItem { move(focusedItem, by: -1) } }
-                .keyboardShortcut(.upArrow, modifiers: .command)
-            Button("") { if let focusedItem { move(focusedItem, by: 1) } }
-                .keyboardShortcut(.downArrow, modifiers: .command)
-            Button("") {
-                if let index = items.firstIndex(where: { $0.id == focusedItem }) { items[index].isCompleted.toggle() }
-            }
-            .keyboardShortcut(.return, modifiers: .command)
-        }
-        .hidden()
-        .accessibilityHidden(true)
-        .frame(width: 0, height: 0)
-    }
 }

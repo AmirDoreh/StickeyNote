@@ -16,7 +16,7 @@ struct DesktopNoteView: View {
     @State private var error: String?
     @State private var showLock = false
     @State private var unlockAttempt = UUID()
-    @FocusState private var focusedChecklistItem: UUID?
+    @State private var focusedChecklistItem: UUID?
     private var note: StickyNote? { store.notes.first { $0.id == noteID } }
     private var isBusy: Bool { unlocking || appleTask != nil }
 
@@ -135,16 +135,16 @@ struct DesktopNoteView: View {
                             Button { store.updateNote(noteID) { n in if let i = n.content.items.firstIndex(where: { $0.id == item.id }) { n.content.items[i].isCompleted.toggle() } } } label: {
                                 Image(systemName: item.isCompleted ? "checkmark.square.fill" : "square").font(.system(size: 15)).foregroundStyle(Palette.noteInk.opacity(item.isCompleted ? 0.45 : 0.8))
                             }.buttonStyle(.plain).accessibilityLabel("\(item.isCompleted ? "Uncheck" : "Complete") \(item.text)")
-                            TextField("New item", text: checklistText(for: item.id), axis: .vertical)
-                                .textFieldStyle(.plain).font(.system(size: 13)).strikethrough(item.isCompleted).opacity(item.isCompleted ? 0.5 : 1)
-                                .focused($focusedChecklistItem, equals: item.id)
-                                .onSubmit { addChecklistItem(after: item.id) }
-                                .onKeyPress(keys: [.return], phases: .down) { event in
-                                    guard !event.modifiers.contains(.shift), !event.modifiers.contains(.command) else { return .ignored }
-                                    addChecklistItem(after: item.id)
-                                    return .handled
-                                }
-                                .accessibilityLabel("Checklist item")
+                            ChecklistTextEditor(text: checklistText(for: item.id), fontSize: 13,
+                                                isCompleted: item.isCompleted, isFocused: checklistFocus(for: item.id),
+                                                onSubmit: { addChecklistItem(after: item.id) },
+                                                onDeleteEmpty: { removeEmptyChecklistItem(item.id) },
+                                                onMove: { moveChecklistItem(item.id, by: $0) },
+                                                onToggle: {
+                                                    store.updateNote(noteID) { note in
+                                                        if let index = note.content.items.firstIndex(where: { $0.id == item.id }) { note.content.items[index].isCompleted.toggle() }
+                                                    }
+                                                })
                         }
                         .id(item.id)
                     }
@@ -166,6 +166,20 @@ struct DesktopNoteView: View {
             }
         })
     }
+    private func checklistFocus(for id: UUID) -> Binding<Bool> {
+        Binding(get: { focusedChecklistItem == id }, set: { focused in
+            if focused { focusedChecklistItem = id }
+            else if focusedChecklistItem == id { focusedChecklistItem = nil }
+        })
+    }
+    private func moveChecklistItem(_ id: UUID, by offset: Int) {
+        store.updateNote(noteID) { note in
+            guard let index = note.content.items.firstIndex(where: { $0.id == id }),
+                  note.content.items.indices.contains(index + offset) else { return }
+            note.content.items.swapAt(index, index + offset)
+        }
+        focusedChecklistItem = id
+    }
     private func addChecklistItem(after id: UUID?) {
         let item = ChecklistItem()
         store.updateNote(noteID) { note in
@@ -176,6 +190,16 @@ struct DesktopNoteView: View {
             }
         }
         focusedChecklistItem = item.id
+    }
+    private func removeEmptyChecklistItem(_ id: UUID) -> Bool {
+        guard let items = note?.content.items,
+              let index = items.firstIndex(where: { $0.id == id }),
+              items[index].text.isEmpty else { return false }
+        let nextFocus = index > 0 ? items[index - 1].id : items.dropFirst().first?.id
+        store.updateNote(noteID) { $0.content.items.removeAll { $0.id == id } }
+        guard note?.content.items.contains(where: { $0.id == id }) == false else { return false }
+        focusedChecklistItem = nextFocus
+        return true
     }
     private func footer(_ note: StickyNote) -> some View {
         HStack {

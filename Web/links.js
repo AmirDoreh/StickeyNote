@@ -74,6 +74,19 @@ function selectionIndex(root) {
   };
 }
 
+export function captureTextSelection(root) {
+  const selection = root.ownerDocument.getSelection();
+  if (!root.contains(selection?.anchorNode) || !root.contains(selection?.focusNode)) return null;
+  const index = selectionIndex(root);
+  return {anchor:index.offset(selection.anchorNode,selection.anchorOffset),focus:index.offset(selection.focusNode,selection.focusOffset)};
+}
+
+export function restoreTextSelection(root,selection) {
+  if (!selection) return;
+  const index = selectionIndex(root), anchor = index.point(selection.anchor), focus = index.point(selection.focus);
+  root.focus(); root.ownerDocument.getSelection().setBaseAndExtent(anchor.node,anchor.offset,focus.node,focus.offset);
+}
+
 function setLinkAttributes(anchor,href) {
   anchor.setAttribute('href',href);
   anchor.setAttribute('target','_blank');

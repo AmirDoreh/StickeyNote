@@ -280,13 +280,13 @@ struct NoteCard: View {
                     ForEach(note.content.items.prefix(compact ? 3 : 5)) { item in
                         HStack(alignment: .top, spacing: 9) {
                             Button { onCheck(item.id) } label: { Image(systemName: item.isCompleted ? "checkmark.square.fill" : "square").font(.system(size: 16, weight: .light)).foregroundStyle(Palette.noteInk.opacity(item.isCompleted ? 0.45 : 0.75)) }.buttonStyle(.plain).accessibilityLabel("\(item.isCompleted ? "Uncheck" : "Complete") \(item.text)")
-                            Text(item.text).strikethrough(item.isCompleted).font(.system(size: 13)).foregroundStyle(Palette.noteInk.opacity(item.isCompleted ? 0.4 : 0.85)).lineLimit(2)
+                            Text(linkedPreview(item.text)).strikethrough(item.isCompleted).font(.system(size: 13)).foregroundStyle(Palette.noteInk.opacity(item.isCompleted ? 0.4 : 0.85)).lineLimit(2)
                         }
                     }
                     if note.content.items.count > 5 { Text("+ \(note.content.items.count - 5) more").font(.system(size: 10)).foregroundStyle(Palette.noteInk.opacity(0.5)) }
                 }
             } else {
-                Text(linkedPreview).noteFont(note.font, size: 13).lineSpacing(6).lineLimit(compact ? 3 : note.content.strokes.isEmpty ? 7 : 3).foregroundStyle(Palette.noteInk.opacity(0.83))
+                Text(linkedPreview(note.content.text)).noteFont(note.font, size: 13).lineSpacing(6).lineLimit(compact ? 3 : note.content.strokes.isEmpty ? 7 : 3).foregroundStyle(Palette.noteInk.opacity(0.83))
                 if !note.content.strokes.isEmpty && !compact { DrawingPreview(strokes: note.content.strokes).frame(height: 65) }
             }
             Spacer(minLength: 0)
@@ -308,10 +308,10 @@ struct NoteCard: View {
             .accessibilityElement(children: .contain)
     }
 
-    private var linkedPreview: AttributedString {
-        var value = AttributedString(note.content.text)
-        for match in NoteLinks.detectedLinks(in: note.content.text) {
-            guard let range = Range(match.range, in: note.content.text),
+    private func linkedPreview(_ text: String) -> AttributedString {
+        var value = AttributedString(text)
+        for match in NoteLinks.detectedLinks(in: text) {
+            guard let range = Range(match.range, in: text),
                   let lower = AttributedString.Index(range.lowerBound, within: value),
                   let upper = AttributedString.Index(range.upperBound, within: value) else { continue }
             value[lower..<upper].link = match.url
