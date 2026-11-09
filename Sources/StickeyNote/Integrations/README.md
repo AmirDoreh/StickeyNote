@@ -117,15 +117,24 @@ widget background. A dedicated CarPlay app is a separate Apple-approved capabili
   offers VisionKit camera scanning on supported iPhones/iPads. Add
   `NSCameraUsageDescription` to the iOS Info.plist. Scanned URLs are previewed and
   only HTTP/HTTPS links can be opened through the scan UI.
-- `BiometricAuthentication.authenticate(reason:)` authenticates with Face ID or
-  Touch ID. Add `NSFaceIDUsageDescription`. Authentication alone does not decrypt
-  a note: successful authentication must unlock a key stored with Keychain access
-  control. Password fallback remains necessary.
+- New native locks use `AppleNoteSecurity`: `LAContext.evaluatePolicy` with
+  `deviceOwnerAuthentication` presents Apple's real system prompt with biometrics
+  and device password/passcode fallback. Add `NSFaceIDUsageDescription` on iOS.
+  A fresh authenticated context retrieves a random credential from a device-only
+  Keychain item protected by `userPresence`; the system password never enters the
+  app. Public credential IDs survive backups/sync, but the secret does not.
+  `BiometricNoteKeys` remains for existing PIN/password locks only.
+  Capture the store's security generation before the prompt so backgrounding,
+  closing the note, or relocking invalidates a late result. Temporary inactivity
+  caused by the system prompt conceals note UI without cancelling the prompt;
+  actual background/sleep and post-prompt focus loss cancel pending work.
 - On macOS, configure `FloatingNoteWindows.shared` with the shared store and call
   `pin(noteID)` to open a compact independent NSPanel. Notes remain on the desktop
   after the main board closes, with menu-bar access for new notes and show/hide.
   Each panel edits the original note, persists its position/size/topmost setting,
   and restores after relaunch. Unpinning preserves the note. Protected panels lock
-  on focus loss; deletion removes the desktop window. The app stays resident until
+  after the configured auto-lock interval (two minutes by default), when the app
+  backgrounds, or when the display sleeps; deletion removes the desktop window.
+  Switching between the app's own windows does not reset the timer. The app stays resident until
   Quit, which waits for saves before exiting. Sync and widget updates retain app-
   lifetime ownership, including while only desktop notes are open.

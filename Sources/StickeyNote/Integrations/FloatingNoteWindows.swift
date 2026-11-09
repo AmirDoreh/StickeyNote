@@ -29,12 +29,14 @@ final class FloatingNoteWindows: NSObject, ObservableObject, NSWindowDelegate {
     private var widgetSaveTask: Task<Void, Never>?
     private var widgetExcludedIDs: Set<UUID> = []
     private var notifications: [NSObjectProtocol] = []
+    private var workspaceNotifications: [NSObjectProtocol] = []
 
     private override init() {
         super.init()
         notifications.append(NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
                                                                     object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
+                AppleNoteSecurity.cancelAll()
                 self?.terminating = true
                 self?.persistFrames()
                 if let store = self?.store { WidgetSnapshotWriter.update(notes: store.notes) }
@@ -44,9 +46,28 @@ final class FloatingNoteWindows: NSObject, ObservableObject, NSWindowDelegate {
                                                                     object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.fitWindowsToScreens() }
         })
+        notifications.append(NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
+                                                                    object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                if !AppleNoteSecurity.isPresentingSystemPrompt { self?.lockProtectedNotes() }
+            }
+        })
+        notifications.append(NotificationCenter.default.addObserver(forName: NSApplication.didHideNotification,
+                                                                    object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { AppleNoteSecurity.cancelAll(); self?.lockProtectedNotes() }
+        })
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+            workspaceNotifications.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name,
+                                                                                           object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { AppleNoteSecurity.cancelAll(); self?.lockProtectedNotes() }
+            })
+        }
     }
 
-    deinit { for token in notifications { NotificationCenter.default.removeObserver(token) } }
+    deinit {
+        for token in notifications { NotificationCenter.default.removeObserver(token) }
+        for token in workspaceNotifications { NSWorkspace.shared.notificationCenter.removeObserver(token) }
+    }
 
     func configure(store: NoteStore) {
         if self.store === store {
@@ -84,6 +105,7 @@ final class FloatingNoteWindows: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func unpin(_ id: UUID) {
+        AppleNoteSecurity.cancel(noteID: id)
         store?.relockNote(id)
         pinnedIDs.remove(id)
         closePanel(id)
@@ -112,6 +134,7 @@ final class FloatingNoteWindows: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func hideAll() {
+        AppleNoteSecurity.cancelAll()
         persistFrames()
         areNotesHidden = !pinnedIDs.isEmpty
         for (id, panel) in panels {
@@ -144,6 +167,7 @@ final class FloatingNoteWindows: NSObject, ObservableObject, NSWindowDelegate {
         saveFrame(panel, id: id)
         panels.removeValue(forKey: id)
         guard !terminating, !suppressedClosures.contains(id) else { return }
+        AppleNoteSecurity.cancel(noteID: id)
         pinnedIDs.remove(id)
         persistPreferences()
         store?.relockNote(id)
@@ -154,13 +178,11 @@ final class FloatingNoteWindows: NSObject, ObservableObject, NSWindowDelegate {
     func windowDidMove(_ notification: Notification) { scheduleFrameSave() }
     func windowDidResize(_ notification: Notification) { scheduleFrameSave() }
 
-    func windowDidResignKey(_ notification: Notification) {
-        guard let panel = notification.object as? DesktopNotePanel,
-              let id = panels.first(where: { $0.value === panel })?.key,
-              let store else { return }
-        // Desktop panels remain alive after the library closes, so their own
-        // focus lifecycle must protect notes independently of its scenePhase.
-        store.relockNote(id)
+    private func lockProtectedNotes() {
+        guard let store else { return }
+        // Panels outlive the library. Lock when the app backgrounds or the display
+        // sleeps, while allowing its own settings sheets and biometric UI to take focus.
+        store.relockAll()
         Task { await store.flush() }
     }
 

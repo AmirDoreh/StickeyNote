@@ -30,14 +30,16 @@ struct SettingsView: View {
                         if let date = sync.lastSynced { Text("Last synced \(date.formatted(date: .abbreviated, time: .shortened))").font(.system(size: 10)).foregroundStyle(Palette.secondary) }
                     }
                     section("BACKUP & RESTORE", symbol: "externaldrive") {
-                        Text("Take your notes with you. Backups include groups, drawings, and history. Password-protected notes stay encrypted.").font(.system(size: 13)).foregroundStyle(Palette.secondary)
+                        Text("Take your notes with you. Backups include groups, drawings, and history. Protected notes stay encrypted.").font(.system(size: 13)).foregroundStyle(Palette.secondary)
                         HStack {
                             Button("Export backup") { do { archive = try store.exportArchive(); exporting = true } catch { self.error = error.localizedDescription } }.buttonStyle(PillButtonStyle())
                             Button("Import backup") { importing = true }.buttonStyle(PillButtonStyle())
                         }
                     }
                     section("A LITTLE PRIVACY", symbol: "lock.shield") {
-                        Text("Notes stay on your device until you enable iCloud. Protected notes are encrypted with your password and hidden from widgets. Locking the app locks all protected notes.").font(.system(size: 13)).foregroundStyle(Palette.secondary)
+                        Text("Lock notes using Apple’s built-in authentication. Touch ID, Face ID, or your device’s password or passcode verifies your identity. Protected notes stay encrypted and hidden from widgets.").font(.system(size: 13)).foregroundStyle(Palette.secondary)
+                        NoteAutoLockPicker(store: store)
+                        Text("The timer starts each time you unlock a note. This setting applies to all protected notes on this device. Leaving the app locks them immediately.").font(.system(size: 11)).foregroundStyle(Palette.secondary)
                         Button("Lock all protected notes") { store.relockAll() }.buttonStyle(PillButtonStyle())
                     }
                     section("YOUR DESKTOP, YOUR WAY", symbol: "rectangle.on.rectangle") {
@@ -57,6 +59,57 @@ struct SettingsView: View {
     }
     private func section<Content: View>(_ title: String, symbol: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 13) { Label(title, systemImage: symbol).font(.system(size: 10, weight: .semibold)).tracking(1.1); content() }.frame(maxWidth: .infinity, alignment: .leading).padding(18).background(.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Palette.line))
+    }
+}
+
+enum NoteLockDuration {
+    static func label(_ seconds: TimeInterval) -> String {
+        seconds < 60 ? "\(Int(seconds)) seconds" : "\(Int(seconds / 60)) \(seconds == 60 ? "minute" : "minutes")"
+    }
+}
+
+struct NoteAutoLockPicker: View {
+    @Bindable var store: NoteStore
+    var body: some View {
+        Picker("Auto-lock after", selection: $store.autoLockSeconds) {
+            ForEach(NoteStore.autoLockOptions, id: \.self) { duration in
+                Text(NoteLockDuration.label(duration)).tag(duration)
+            }
+        }.font(.system(size: 12))
+    }
+}
+
+enum AppleAuthenticationCopy {
+    static var unlockDescription: String {
+        #if os(macOS)
+        "Use Touch ID or your Mac login password."
+        #else
+        "Use Face ID, Touch ID, or your device passcode."
+        #endif
+    }
+}
+
+/// System authentication may temporarily make a scene inactive.
+/// Conceal private UI without dismissing the prompt or losing its state.
+struct InactiveNotePrivacy: ViewModifier {
+    @Environment(\.scenePhase) private var scenePhase
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        let hidden = scenePhase != .active
+        #else
+        let hidden = scenePhase != .active && AppleNoteSecurity.isAuthenticating
+        #endif
+        content.opacity(hidden ? 0 : 1)
+            .accessibilityHidden(hidden)
+            .overlay {
+                if hidden {
+                    VStack(spacing: 12) {
+                        Image(systemName: "lock.shield").font(.system(size: 32, weight: .light))
+                        Text("Notes hidden").font(.headline)
+                    }.foregroundStyle(Palette.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Palette.paper.ignoresSafeArea())
+                }
+            }
     }
 }
 

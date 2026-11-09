@@ -50,6 +50,7 @@ struct StickeyNoteApp: App {
 
     private var mainContent: some View {
         BoardView(store: store)
+            .modifier(InactiveNotePrivacy())
             .tint(Palette.ink)
             .preferredColorScheme(.light)
             #if os(macOS)
@@ -60,7 +61,13 @@ struct StickeyNoteApp: App {
                 store.selectedNoteID = id
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase != .active { store.relockAll(); Task { await store.flush() } }
+                if phase == .active { store.relockExpiredNotes() }
+                #if os(iOS)
+                if phase == .background { AppleNoteSecurity.cancelAll(); store.relockAll(); Task { await store.flush() } }
+                #else
+                // Apple's authentication panel may temporarily take app focus.
+                if phase != .active && !AppleNoteSecurity.isPresentingSystemPrompt { store.relockAll(); Task { await store.flush() } }
+                #endif
             }
             #if os(macOS)
             .onAppear { appDelegate.store = store; FloatingNoteWindows.shared.configure(store: store); FloatingNoteWindows.shared.restore() }

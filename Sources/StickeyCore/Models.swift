@@ -129,13 +129,34 @@ public struct NoteSnapshot: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
-/// Only ciphertext, a public salt, and KDF parameters are serialized for a protected note.
+/// Ciphertext and public encryption metadata; the unlocking credential is never serialized.
 public struct EncryptedNotePayload: Codable, Equatable, Sendable {
     public var salt: Data
     public var iterations: UInt32
     public var sealedData: Data
-    public init(salt: Data, iterations: UInt32, sealedData: Data) {
+    /// Absent on legacy PIN/password notes. Apple credentials live only in device Keychain.
+    public var credentialKind: String?
+    public var credentialID: UUID?
+    public init(salt: Data, iterations: UInt32, sealedData: Data,
+                credentialKind: String? = nil, credentialID: UUID? = nil) {
         self.salt = salt; self.iterations = iterations; self.sealedData = sealedData
+        self.credentialKind = credentialKind; self.credentialID = credentialID
+    }
+    private enum CodingKeys: String, CodingKey {
+        case salt, iterations, sealedData, credentialKind, credentialID
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        salt = try values.decode(Data.self, forKey: .salt)
+        iterations = try values.decode(UInt32.self, forKey: .iterations)
+        sealedData = try values.decode(Data.self, forKey: .sealedData)
+        credentialKind = try values.decodeIfPresent(String.self, forKey: .credentialKind)
+        credentialID = try values.decodeIfPresent(UUID.self, forKey: .credentialID)
+        guard (credentialKind == nil && credentialID == nil) ||
+                (credentialKind == "apple" && credentialID != nil) else {
+            throw DecodingError.dataCorruptedError(forKey: .credentialKind, in: values,
+                debugDescription: "Unsupported or incomplete note credential metadata.")
+        }
     }
 }
 
@@ -170,6 +191,7 @@ public struct StickyNote: Identifiable, Codable, Equatable, Sendable {
         self.history = history; self.encryptedContent = encryptedContent
     }
     public var isPasswordProtected: Bool { encryptedContent != nil }
+    public var usesAppleAuthentication: Bool { encryptedContent?.credentialKind == "apple" }
     /// Legacy encrypted notes have an implicit protection epoch. Legacy plaintext
     /// has none, so a late offline color/pin edit cannot silently remove a lock.
     public var protectionVersionDate: Date? { protectionUpdatedAt ?? (isPasswordProtected ? updatedAt : nil) }

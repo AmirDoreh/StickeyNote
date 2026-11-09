@@ -1,4 +1,4 @@
-import { NoteStore, COLORS, FONTS } from './core.js';
+import { NoteStore, COLORS, FONTS, AUTO_LOCK_OPTIONS } from './core.js';
 import { createCloudSync } from './cloud.js';
 
 const paths = {
@@ -27,12 +27,13 @@ const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&am
 const attr = escape;
 const store = new NoteStore();
 let filter = 'all', query = '', sort = 'updated', view = 'grid', editorID = null, drawingVisible = false, visibleLimit = 60;
-let toastTimer, renderFrame, cloudMessage = 'Available with setup', modalCleanup = null;
+let toastTimer, renderFrame, cloudMessage = 'Available with setup', modalCleanup = null, modalNoteID = null, modalSession = null;
 let drawingColor = '30362B', drawingWidth = 3, erasing = false, drawingUndo = [];
 const editor = $('#editor-dialog'), utility = $('#utility-dialog');
 const cloud = createCloudSync({getArchive: async () => { await store.flush(); return store.exportArchive(); }, mergeArchive: value => store.mergeArchive(typeof value === 'string' ? value : JSON.stringify(value)), onStatus(message) { cloudMessage = message; renderSidebar(); const label = $('#cloud-status'); if (label) label.textContent = message; }});
 const noteByID = id => store.notes.find(note => note.id === id);
 const currentNote = () => noteByID(editorID);
+const usesAppleAuthentication = note => note.encryptedContent?.credentialKind === 'apple';
 const colorFor = note => COLORS.find(color => color.id === note.color) || COLORS[0];
 const fontFor = note => FONTS.find(font => font.id === note.font) || FONTS[0];
 const plainText = note => [note.content.title, note.content.text, ...(note.content.items || []).map(item => `${item.isCompleted ? '☑' : '☐'} ${item.text}`)].filter(Boolean).join('\n');
@@ -43,7 +44,22 @@ const timeAgo = value => { const minutes = Math.max(0, (Date.now() - new Date(va
 function toast(message) { clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').classList.add('visible'); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 3600); }
 function report(error) { toast(error?.message || String(error)); }
 function scheduleRender() { if (editor.open) { renderStatus(); return; } if (renderFrame) return; renderFrame = requestAnimationFrame(() => { renderFrame = 0; renderSidebar(); renderBoard(); renderStatus(); }); }
-store.addEventListener('change', () => { if (editor.open && editorID && store.isLocked(editorID) && !$('.locked-editor',editor)) { if(utility.open)utility.close();utility.innerHTML='';renderEditor(); } scheduleRender(); cloud.schedule(); });
+let lockedNoteIDs=new Set(store.notes.filter(note=>store.isLocked(note.id)).map(note=>note.id));
+function retireModalSession() {
+  const session=modalSession;modalSession=null;modalNoteID=null;
+  if(session?.pending)session.onCancel?.();
+  if(modalCleanup){modalCleanup();modalCleanup=null;}
+}
+function clearUtility() { retireModalSession();if(utility.open)utility.close();utility.innerHTML=''; }
+store.addEventListener('change', () => {
+  const locked=new Set(store.notes.filter(note=>store.isLocked(note.id)).map(note=>note.id));
+  const newlyLocked=[...locked].some(id=>!lockedNoteIDs.has(id));lockedNoteIDs=locked;
+  if(modalNoteID&&locked.has(modalNoteID))clearUtility();
+  if(editorID&&locked.has(editorID)){drawingUndo=[];drawingVisible=false;if(editor.open&&!$('.locked-editor',editor))renderEditor();}
+  // The board remains behind dialogs; remove its plaintext synchronously too.
+  if(newlyLocked)renderBoard();
+  scheduleRender(); cloud.schedule();
+});
 store.addEventListener('merge', () => { if(editor.open)renderEditor(); });
 store.addEventListener('status', renderStatus);
 function renderStatus() { $('#save-indicator').innerHTML = `<span></span>${escape(store.saveStatus || 'Saved on this device')}`; }
@@ -88,7 +104,7 @@ function renderBoard() {
 function noteCard(note) {
   const locked = store.isLocked(note.id), color = colorFor(note), group = store.groups.find(group => group.id === note.groupID);
   const items = note.content.items || [], completed = items.filter(item => item.isCompleted).length;
-  let preview = locked ? `<p class="note-preview">${icon('lock',22)}<br>This thought is just for you.<br>Unlock to take a look.</p>` : note.kind === 'checklist' ? `<ul class="card-checklist">${items.slice(0,4).map(item => `<li><button class="card-checkbox ${item.isCompleted ? 'done' : ''}" data-action="toggle-check" data-id="${note.id}" data-item="${item.id}" aria-label="${item.isCompleted ? 'Uncheck' : 'Check'} ${attr(item.text)}">${item.isCompleted ? icon('check',11) : ''}</button><span class="${item.isCompleted ? 'done-text' : ''}">${escape(item.text || 'An empty thought')}</span></li>`).join('')}${items.length > 4 ? `<li class="more-items">+ ${items.length-4} more</li>` : ''}</ul>` : `<p class="note-preview">${escape(note.content.text || 'A blank page, full of possibilities.')}</p>`;
+  let preview = locked ? `<div class="locked-card"><p>${icon('lock',22)}<br>Locked · Private note</p><button class="button small" data-action="unlock" data-id="${note.id}">${icon('unlock',14)} Unlock</button></div>` : note.kind === 'checklist' ? `<ul class="card-checklist">${items.slice(0,4).map(item => `<li><button class="card-checkbox ${item.isCompleted ? 'done' : ''}" data-action="toggle-check" data-id="${note.id}" data-item="${item.id}" aria-label="${item.isCompleted ? 'Uncheck' : 'Check'} ${attr(item.text)}">${item.isCompleted ? icon('check',11) : ''}</button><span class="${item.isCompleted ? 'done-text' : ''}">${escape(item.text || 'An empty thought')}</span></li>`).join('')}${items.length > 4 ? `<li class="more-items">+ ${items.length-4} more</li>` : ''}</ul>` : `<p class="note-preview">${escape(note.content.text || 'A blank page, full of possibilities.')}</p>`;
   if (!locked && note.content.strokes?.length) preview += `<svg class="note-drawing" viewBox="0 0 300 65" aria-label="A sketch">${note.content.strokes.slice(-15).map(stroke => `<polyline points="${stroke.points.map(p => `${p.x*300},${p.y*65}`).join(' ')}" fill="none" stroke="#${/^[a-f\d]{6}$/i.test(stroke.color) ? stroke.color : '333333'}" stroke-width="${Math.min(7,Math.max(1,stroke.width))}"/>`).join('')}</svg>`;
   return `<article class="note-card" style="background:#${color.hex.replace('#','')}" role="button" tabindex="0" draggable="true" data-note="${note.id}" aria-label="Open ${attr(noteTitle(note))}"><div class="note-topline"><span class="note-group-tag">${escape(group?.name || (note.kind === 'checklist' ? 'Checklist' : 'Note'))}</span>${note.isPinned ? `<span class="pin-mark">${icon('pin',12)}</span>` : ''}</div><div class="note-actions"><button class="icon-button" data-action="pin" data-id="${note.id}" aria-label="${note.isPinned ? 'Unpin' : 'Pin'} note">${icon('pin',13)}</button><button class="icon-button" data-action="note-menu" data-id="${note.id}" aria-label="Note actions">${icon('more',17)}</button></div><h2 class="note-title">${escape(noteTitle(note))}</h2>${preview}<div class="note-bottom"><span class="note-bottom-left">${note.isPasswordProtected || note.encryptedContent ? icon('lock',11) : icon(note.kind === 'checklist' ? 'checklist' : 'note',11)}${escape(timeAgo(note.updatedAt))}</span>${note.kind === 'checklist' && !locked ? `<span style="display:flex;gap:6px;align-items:center">${completed}/${items.length}<span class="progress-bar"><i style="width:${items.length ? completed/items.length*100 : 0}%"></i></span></span>` : note.content.strokes?.length && !locked ? icon('draw',12) : ''}</div></article>`;
 }
@@ -109,14 +125,14 @@ function sanitizeHTML(value) {
   }
   return documentCopy.body.innerHTML;
 }
-function openNote(id) { editorID = id; drawingVisible = false; drawingUndo = []; renderEditor(); if (!editor.open) editor.showModal(); requestAnimationFrame(() => { if ($('#drawing-preview')) drawStrokes($('#drawing-preview'), currentNote()?.content.strokes || []); }); $('#sidebar').classList.remove('open'); }
+function openNote(id) { store.lockExpiredNotes(); editorID = id; drawingVisible = false; drawingUndo = []; renderEditor(); if (!editor.open) editor.showModal(); requestAnimationFrame(() => { if ($('#drawing-preview')) drawStrokes($('#drawing-preview'), currentNote()?.content.strokes || []); }); $('#sidebar').classList.remove('open'); }
 function renderEditor() {
   const note = currentNote(); if (!note) { editor.close(); return; }
   const locked = store.isLocked(note.id), color = colorFor(note);
   const tool = (action, glyph, label, extra='') => `<button class="icon-button ${extra}" data-action="${action}" data-id="${note.id}" title="${label}" aria-label="${label}">${icon(glyph,17)}</button>`;
   editor.style.background = `#${color.hex.replace('#','')}`;
-  editor.innerHTML = `<div class="editor-shell"><div class="editor-topbar"><div class="editor-breadcrumb">${icon(note.kind === 'checklist' ? 'checklist' : 'note',16)}<span>${escape(store.groups.find(group => group.id === note.groupID)?.name || 'My notes')}</span></div><div class="editor-actions">${tool('pin','pin',note.isPinned ? 'Unpin note':'Pin note')}${tool('color','palette','Change color')}${tool('history','history','Version history','optional-action')}${tool('qr','qr','Show QR code','optional-action')}${tool('password',locked ? 'lock' : 'unlock',note.encryptedContent ? 'Password options' : 'Protect note')}${tool('note-menu','more','More actions')}${tool('close-editor','close','Close note')}</div></div>
-    ${locked ? `<div class="locked-editor"><div class="lock-icon">${icon('lock',28)}</div><h2>A thought just for you.</h2><p>This note is encrypted with your password.<br>Unlock it to pick up where you left off.</p><button class="button primary" data-action="unlock" data-id="${note.id}">${icon('unlock',15)} Unlock note</button></div>` : `<div class="editor-body ${drawingVisible?'drawing-mode':''}"><input class="editor-title" id="note-title" aria-label="Note title" placeholder="Untitled ${note.kind === 'checklist' ? 'checklist' : 'note'}" value="${attr(note.content.title)}">
+  editor.innerHTML = `<div class="editor-shell"><div class="editor-topbar"><div class="editor-breadcrumb">${icon(note.kind === 'checklist' ? 'checklist' : 'note',16)}<span>${escape(store.groups.find(group => group.id === note.groupID)?.name || 'My notes')}</span></div><div class="editor-actions">${tool('pin','pin',note.isPinned ? 'Unpin note':'Pin note')}${tool('color','palette','Change color')}${tool('history','history','Version history','optional-action')}${tool('qr','qr','Show QR code','optional-action')}${tool('password',locked ? 'lock' : 'unlock',note.encryptedContent ? 'Lock settings' : 'Lock note')}${tool('note-menu','more','More actions')}${tool('close-editor','close','Close note')}</div></div>
+    ${locked ? `<div class="locked-editor"><div class="lock-icon">${icon('lock',28)}</div><h2>This note is locked.</h2><p>${usesAppleAuthentication(note)?'Open this note in the native Stickey Notes app on the Apple device where it was locked.':`Enter your PIN or password to view this note.<br>It locks again after ${autoLockLabel(store.autoLockSeconds)}.`}</p><button class="button primary" data-action="unlock" data-id="${note.id}">${icon('unlock',15)} ${usesAppleAuthentication(note)?'About unlocking':'Unlock note'}</button></div>` : `<div class="editor-body ${drawingVisible?'drawing-mode':''}"><input class="editor-title" id="note-title" aria-label="Note title" placeholder="Untitled ${note.kind === 'checklist' ? 'checklist' : 'note'}" value="${attr(note.content.title)}">
     ${note.kind === 'text' ? richToolbar(note) + `<div id="note-content" class="note-content" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Note text" spellcheck="true" style="font-family:${attr(fontFor(note).family || 'inherit')};font-size:${note.fontSize}px">${note.content.richHTML ? sanitizeHTML(note.content.richHTML) : escape(note.content.text).replace(/\n/g,'<br>')}</div>` : `<div class="editor-list" id="editor-list">${checklistRows(note)}</div><button class="add-item" data-action="add-item">${icon('plus',17)} Add a little to-do</button>`}
     <div id="drawing-area">${drawingVisible ? drawingMarkup() : note.content.strokes?.length ? '<canvas id="drawing-preview" class="drawing-canvas" style="height:140px;border:0;margin-top:20px;cursor:pointer" aria-label="Note sketch — click to edit"></canvas>' : ''}</div></div>
     <div class="editor-footer"><span id="editor-stats">${note.encryptedContent ? 'Encrypted · ' : ''}${note.kind === 'checklist' ? `${note.content.items.filter(item=>item.isCompleted).length} of ${note.content.items.length} completed` : `${note.content.text.trim().split(/\s+/).filter(Boolean).length} words`} · Saved as you go</span><div class="footer-actions"><button data-action="draw">${icon('draw',14)} ${drawingVisible ? 'Done drawing' : 'Make a sketch'}</button><button class="icon-button" data-action="share" title="Export note" aria-label="Export note">${icon('share',15)}</button></div></div>`}</div>`;
@@ -131,14 +147,27 @@ function checklistRows(note) {
 }
 async function saveRichText() { const field=$('#note-content'); if (!field || !currentNote()) return; await store.updateNote(editorID,note=>{note.content.text=field.innerText;note.content.richHTML=sanitizeHTML(field.innerHTML);note.content.richText=null;});const stats=$('#editor-stats');if(stats)stats.textContent=`${currentNote().encryptedContent?'Encrypted · ':''}${currentNote().content.text.trim().split(/\s+/).filter(Boolean).length} words · Saved as you go`; }
 
-function showModal(title, html, {submit, handler, cancel='Close', afterOpen}={}) {
-  if (modalCleanup) { modalCleanup(); modalCleanup=null; }
+function showModal(title, html, {submit, handler, cancel='Close', afterOpen, noteID=null, onCancel}={}) {
+  retireModalSession();
+  const session={pending:false,onCancel};modalSession=session;
+  modalNoteID=noteID;
   utility.innerHTML = `<form id="utility-form"><div class="utility-header"><h2>${escape(title)}</h2><button type="button" class="icon-button" data-action="close-utility" aria-label="Close">${icon('close',18)}</button></div><div class="utility-body">${html}</div><div class="utility-error" role="alert"></div><div class="utility-actions"><button type="button" class="button" data-action="close-utility">${escape(cancel)}</button>${submit?`<button class="button primary" type="submit">${escape(submit)}</button>`:''}</div></form>`;
-  $('#utility-form').addEventListener('submit',async event=>{event.preventDefault();const button=$('button[type=submit]',utility);if(button)button.disabled=true;try {await handler(new FormData(event.currentTarget));utility.close();} catch(error){const errorLabel=$('.utility-error',utility);if(errorLabel)errorLabel.textContent=error.message||String(error);else report(error);if(button)button.disabled=false;}});
+  $('#utility-form').addEventListener('submit',async event=>{
+    event.preventDefault();if(session.pending)return;
+    const isCurrent=()=>modalSession===session&&utility.open;
+    const button=$('button[type=submit]',utility);if(button)button.disabled=true;session.pending=true;
+    try {
+      await handler(new FormData(event.currentTarget),isCurrent);
+      if(isCurrent()){session.pending=false;clearUtility();}
+    } catch(error) {
+      if(isCurrent()){session.pending=false;const errorLabel=$('.utility-error',utility);if(errorLabel)errorLabel.textContent=error.message||String(error);if(button)button.disabled=false;}
+    }
+  });
   if (!utility.open) utility.showModal();
   afterOpen?.();
 }
-utility.addEventListener('close',()=>{if(modalCleanup){modalCleanup();modalCleanup=null;}});
+utility.addEventListener('close',()=>{if(!utility.open)clearUtility();});
+utility.addEventListener('cancel',event=>{event.preventDefault();clearUtility();});
 function field(label,name,value='',type='text',extra='') { return `<div class="field"><label for="field-${name}">${escape(label)}</label><input id="field-${name}" name="${name}" type="${type}" value="${attr(value)}" ${extra}></div>`; }
 function addGroup() { showModal('A home for your thoughts',`<p>Give a group a name. You can move notes into it or drop them onto its sidebar label.</p>${field('Group name','name','','text','required maxlength="80" placeholder="e.g. Weekend plans"')}`,{submit:'Create group',handler:async data=>{filter=await store.addGroup(data.get('name'));scheduleRender();toast('A new little space, ready for ideas.');}}); }
 function groupMenu(id) {
@@ -146,39 +175,63 @@ function groupMenu(id) {
   showModal('Edit group',`${field('Group name','name',group.name,'text','required maxlength="80"')}<div class="settings-section"><p>Deleting a group keeps its notes in All notes.</p><button type="button" class="button danger" id="delete-group-button">${icon('trash',14)} Delete group</button></div>`,{submit:'Save name',handler:async data=>store.renameGroup(id,data.get('name')),afterOpen:()=>$('#delete-group-button').onclick=async()=>{await store.deleteGroup(id);if(filter===id)filter='all';utility.close();scheduleRender();toast('Group removed. Your notes are safe.');}});
 }
 function chooseColor(id=editorID) { const note=noteByID(id);if(!note)return;showModal('Change the mood',`<p>A little color goes a long way.</p><div class="color-grid">${COLORS.map(color=>`<button type="button" class="color-swatch ${note.color===color.id?'active':''}" data-color="${color.id}" style="background:#${color.hex.replace('#','')}" aria-label="${attr(color.name)}" title="${attr(color.name)}">${note.color===color.id?`<span class="swatch-check">${icon('check',18)}</span>`:''}</button>`).join('')}</div>`,{afterOpen:()=>{for(const button of utility.querySelectorAll('[data-color]'))button.onclick=async()=>{await store.updateNote(id,n=>n.color=button.dataset.color);utility.close();if(editor.open&&id===editorID)renderEditor();};}}); }
+const autoLockLabel = seconds => seconds<60?`${seconds} seconds`:`${seconds/60} minute${seconds===60?'':'s'}`;
+function autoLockPicker() {
+  return `<div class="field"><label for="auto-lock-seconds">Lock notes automatically after</label><select id="auto-lock-seconds">${AUTO_LOCK_OPTIONS.map(seconds=>`<option value="${seconds}" ${store.autoLockSeconds===seconds?'selected':''}>${autoLockLabel(seconds)}${seconds===120?' (default)':''}</option>`).join('')}</select></div><p>Time starts when a note is unlocked. This setting applies to all protected notes on this device.</p>`;
+}
+function setupAutoLockPicker() { const picker=$('#auto-lock-seconds');if(picker)picker.onchange=()=>{try{store.autoLockSeconds=Number(picker.value);}catch(error){report(error);}}; }
+function credentialFields(kind) {
+  const pin=kind==='pin',label=pin?'PIN':'Password',constraints=pin?'inputmode="numeric" pattern="[0-9]{4,12}" minlength="4" maxlength="12"':'minlength="8"';
+  return `${field(label,'password','','password',`required autocomplete="new-password" ${constraints}`)}${field(`Confirm ${label}`,'confirm','','password',`required autocomplete="new-password" ${constraints}`)}`;
+}
 function passwordDialog(id,mode) {
   const note=noteByID(id);if(!note)return;
+  if(usesAppleAuthentication(note)) {
+    showModal('Unlock on your Apple device','<p>This note uses Apple’s built-in authentication. Open it in the native Stickey Notes app on the device where it was locked, then use Touch ID, Face ID, or the system password/passcode prompt.</p><p>The browser cannot access its device-protected key. Your encrypted note stays safe in backups and sync.</p>');
+    return;
+  }
   const locked=store.isLocked(id);
-  if(!mode&&note.encryptedContent&&!locked){showModal('A little privacy',`<p>Your note is encrypted on this device and in backups. Lock it when you’re done, or remove its password.</p><div class="context-actions"><button type="button" class="button" data-action="relock" data-id="${id}">${icon('lock',16)} Lock now</button><button type="button" class="button" data-action="remove-password" data-id="${id}">${icon('unlock',16)} Remove password</button></div>`);return;}
+  if(!mode&&note.encryptedContent&&!locked){showModal('Lock settings',`<p>Your note is encrypted on this device and in backups. It locks automatically after ${autoLockLabel(store.autoLockSeconds)}.</p>${autoLockPicker()}<div class="context-actions"><button type="button" class="button" data-action="relock" data-id="${id}">${icon('lock',16)} Lock now</button><button type="button" class="button" data-action="remove-password" data-id="${id}">${icon('unlock',16)} Remove lock</button></div>`,{afterOpen:setupAutoLockPicker,noteID:id});return;}
   mode=mode||(locked?'unlock':'protect');
-  const title=mode==='protect'?'Keep this thought private':mode==='remove'?'Remove password':'Welcome back';
-  showModal(title,`<p>${mode==='protect'?'Choose a password with at least 8 characters. Keep it somewhere safe: encrypted notes cannot be recovered without it.':mode==='remove'?'Enter the password to remove encryption from this note.':'Enter your password to unlock this note. It stays encrypted in storage, even while you edit.'}</p>${field('Password','password','','password',`required autocomplete="${mode==='protect'?'new-password':'current-password'}" ${mode==='protect'?'minlength="8"':''}`)}${mode==='protect'?field('Confirm password','confirm','','password','required minlength="8" autocomplete="new-password"'):''}`,{submit:mode==='protect'?'Protect note':mode==='remove'?'Remove password':'Unlock note',handler:async data=>{const password=data.get('password');if(mode==='protect'){if(password!==data.get('confirm'))throw Error('The passwords don’t match.');await store.lockNote(id,password);}else if(mode==='remove')await store.removePassword(id,password);else await store.unlockNote(id,password);if(editor.open&&editorID===id)renderEditor();toast(mode==='protect'?'Note protected.':mode==='remove'?'Password removed.':'Your thought, unlocked.');}});
+  const title=mode==='protect'?'Lock this note':mode==='remove'?'Remove note lock':'Unlock note';
+  const fields=mode==='protect'?`<div class="field"><label for="credential-type">Unlock with</label><select id="credential-type" name="credentialType"><option value="pin">PIN (4–12 digits)</option><option value="password">Password (8+ characters)</option></select></div><div id="credential-fields">${credentialFields('pin')}</div>${autoLockPicker()}`:field('PIN or password','password','','password','required autocomplete="current-password"');
+  showModal(title,`<p>${mode==='protect'?'Choose a PIN with 4–12 digits or a password with at least 8 characters. Keep it safe: encrypted notes cannot be recovered without it.':mode==='remove'?'Enter your PIN or password to remove encryption from this note.':`Enter your PIN or password. The note locks again after ${autoLockLabel(store.autoLockSeconds)}.`}</p>${fields}`,{submit:mode==='protect'?'Lock note':mode==='remove'?'Remove lock':'Unlock note',onCancel:()=>store.relockNote(id),handler:async (data,isCurrent)=>{
+    const password=data.get('password');
+    if(mode==='protect'){if(password!==data.get('confirm'))throw Error('The PINs or passwords don’t match.');await store.lockNote(id,password,{credentialType:data.get('credentialType')});}
+    else if(mode==='remove')await store.removePassword(id,password);
+    else await store.unlockNote(id,password);
+    if(!isCurrent())return;
+    if(editor.open&&editorID===id)renderEditor();else if(mode==='unlock')openNote(id);
+    toast(mode==='protect'?'Note locked.':mode==='remove'?'Note lock removed.':'Note unlocked.');
+  },afterOpen:()=>{setupAutoLockPicker();const type=$('#credential-type');if(type)type.onchange=()=>{$('#credential-fields').innerHTML=credentialFields(type.value);$('#field-password').focus();};}});
 }
 function historyDialog(id=editorID) {
+  store.lockExpiredNotes();
   const note=noteByID(id);if(!note)return;if(store.isLocked(id)){passwordDialog(id,'unlock');return;}
   const history=[...(note.history||[])].reverse();
-  showModal('A little time travel',`<p>Revisit an earlier version. Restoring keeps the current version in your history too.</p><div class="history-list">${history.length?history.map(snapshot=>`<div class="history-item"><small>${escape(new Date(snapshot.date).toLocaleString())}</small><h3>${escape(snapshot.content.title||'Untitled note')}</h3><p>${escape(snapshot.content.text||(snapshot.content.items||[]).map(item=>item.text).join('\n'))}</p><button type="button" data-snapshot="${snapshot.id}">${icon('restore',12)} Restore this version</button></div>`).join(''):'<p>Your earlier thoughts will appear here as you edit. Each editing session keeps a snapshot automatically.</p>'}</div>`,{afterOpen:()=>{for(const button of utility.querySelectorAll('[data-snapshot]'))button.onclick=async()=>{await store.restoreSnapshot(id,button.dataset.snapshot);utility.close();if(editor.open)renderEditor();toast('Earlier version restored.');};}});
+  showModal('A little time travel',`<p>Revisit an earlier version. Restoring keeps the current version in your history too.</p><div class="history-list">${history.length?history.map(snapshot=>`<div class="history-item"><small>${escape(new Date(snapshot.date).toLocaleString())}</small><h3>${escape(snapshot.content.title||'Untitled note')}</h3><p>${escape(snapshot.content.text||(snapshot.content.items||[]).map(item=>item.text).join('\n'))}</p><button type="button" data-snapshot="${snapshot.id}">${icon('restore',12)} Restore this version</button></div>`).join(''):'<p>Your earlier thoughts will appear here as you edit. Each editing session keeps a snapshot automatically.</p>'}</div>`,{noteID:id,afterOpen:()=>{for(const button of utility.querySelectorAll('[data-snapshot]'))button.onclick=async()=>{await store.restoreSnapshot(id,button.dataset.snapshot);utility.close();if(editor.open)renderEditor();toast('Earlier version restored.');};}});
 }
 function noteMenu(id=editorID) {
   const note=noteByID(id);if(!note)return;
   const action=(name,glyph,label)=>`<button type="button" class="button" data-action="${name}" data-id="${id}">${icon(glyph,16)} ${label}</button>`;
-  showModal('A little more',`<div class="context-actions">${note.deletedAt?action('restore-note','restore','Bring this note back'):action('pin','pin',note.isPinned?'Unpin note':'Pin this note')+action('move-group','folder','Move to a group')+action('duplicate','copy','Make a copy')+action('qr','qr','Show as a QR code')+action('history','history','Browse version history')+action('share','download','Export this note')+action('delete-note','trash','Move to recently deleted')}</div>`);
+  showModal('A little more',`<div class="context-actions">${note.deletedAt?action('restore-note','restore','Bring this note back'):action('pin','pin',note.isPinned?'Unpin note':'Pin this note')+action('move-group','folder','Move to a group')+action('password','lock',note.encryptedContent?'Lock settings':'Lock note')+action('duplicate','copy','Make a copy')+action('qr','qr','Show as a QR code')+action('history','history','Browse version history')+action('share','download','Export this note')+action('delete-note','trash','Move to recently deleted')}</div>`);
 }
 function moveGroup(id) { const note=noteByID(id);showModal('A place to belong',`<div class="field"><label for="group-destination">Move note to</label><select name="group" id="group-destination"><option value="">Ungrouped</option>${store.groups.map(group=>`<option value="${group.id}" ${group.id===note.groupID?'selected':''}>${escape(group.name)}</option>`).join('')}</select></div>`,{submit:'Move note',handler:async data=>{await store.updateNote(id,n=>n.groupID=data.get('group')||null);if(editor.open)renderEditor();toast('Note moved.');}}); }
 function download(data,name,type='text/plain') { const url=URL.createObjectURL(new Blob([data],{type}));const link=document.createElement('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
-function exportNote(id=editorID) { const note=noteByID(id);if(store.isLocked(id)){passwordDialog(id,'unlock');return;}download(plainText(note),`${noteTitle(note).replace(/[^\p{L}\p{N} ._-]/gu,'').slice(0,70)||'note'}.txt`);toast('Your thought, ready to take with you.'); }
+function exportNote(id=editorID) { store.lockExpiredNotes(); const note=noteByID(id);if(store.isLocked(id)){passwordDialog(id,'unlock');return;}download(plainText(note),`${noteTitle(note).replace(/[^\p{L}\p{N} ._-]/gu,'').slice(0,70)||'note'}.txt`);toast('Your thought, ready to take with you.'); }
 function showQR(id=editorID) {
+  store.lockExpiredNotes();
   const note=noteByID(id);if(!note)return;if(store.isLocked(id)){passwordDialog(id,'unlock');return;}
   const text=plainText(note);if(!text.trim()){toast('Write a little something before making a QR code.');return;}
   try {
     window.qrcode.stringToBytes=window.qrcode.stringToBytesFuncs['UTF-8'];
     const qr=window.qrcode(0,'M');qr.addData(text);qr.make();
     const svg=qr.createSvgTag({cellSize:5,margin:20,scalable:true});
-    showModal('Show. Scan. Go.',`<p>A little bridge from one screen to another. Anyone who scans this code can read the note.</p><div class="qr-wrap">${svg}</div><div class="settings-actions"><button type="button" class="button small" id="save-qr">${icon('download',14)} Save QR image</button><button type="button" class="button small" id="copy-note">${icon('copy',14)} Copy text</button></div>`,{afterOpen:()=>{$('#save-qr').onclick=()=>download(svg,'stickeynote-qr.svg','image/svg+xml');$('#copy-note').onclick=()=>navigator.clipboard.writeText(text).then(()=>toast('Copied.')).catch(()=>toast('Clipboard access isn’t available in this browser.'));}});
+    showModal('Show. Scan. Go.',`<p>A little bridge from one screen to another. Anyone who scans this code can read the note.</p><div class="qr-wrap">${svg}</div><div class="settings-actions"><button type="button" class="button small" id="save-qr">${icon('download',14)} Save QR image</button><button type="button" class="button small" id="copy-note">${icon('copy',14)} Copy text</button></div>`,{noteID:id,afterOpen:()=>{$('#save-qr').onclick=()=>download(svg,'stickeynote-qr.svg','image/svg+xml');$('#copy-note').onclick=()=>navigator.clipboard.writeText(text).then(()=>toast('Copied.')).catch(()=>toast('Clipboard access isn’t available in this browser.'));}});
   }catch{toast('This note is too long for a QR code. Try exporting it as text.');}
 }
 function settingsDialog() {
-  showModal('Your little workspace',`<div class="settings-section" style="margin-top:0;border:0"><h3>iCloud, everywhere you think.</h3><p>Connect the same Apple account on Mac, iPhone and the web to keep your notes together.</p><div class="cloud-state">${icon('cloud',17)}<span id="cloud-status">${escape(cloudMessage)}</span></div><div id="apple-sign-in-button"></div><div id="apple-sign-out-button"></div><div class="settings-actions"><button type="button" class="button small" id="connect-cloud">${icon('cloud',14)} Connect iCloud</button><button type="button" class="button small" id="sync-now">${icon('restore',14)} Sync now</button></div><p class="token-note">${window.STICKEY_CLOUD_CONFIG?'Uses your private CloudKit database.':'This build saves on this device. To enable iCloud, configure the Apple container and public web token in config.js.'}</p></div><div class="settings-section"><h3>A copy, just in case.</h3><p>Export a full backup, including groups and history. Password-protected notes stay encrypted.</p><div class="settings-actions"><button type="button" class="button small" data-action="export-backup">${icon('download',14)} Export backup</button><button type="button" class="button small" data-action="import-backup">${icon('upload',14)} Import backup</button></div></div><div class="settings-section"><h3>From a code to a thought.</h3><p>Scan a QR code or barcode from an image. Images are processed right here on your device.</p><button type="button" class="button small" data-action="scan">${icon('scan',14)} Scan an image</button></div><div class="settings-section"><h3>Small shortcuts, big help.</h3><p>⌘ / Ctrl N &nbsp; New note<br>⌘ / Ctrl T &nbsp; New checklist<br>⌘ / Ctrl K &nbsp; Search<br>Escape &nbsp; Close a note</p></div>`,{afterOpen:()=>{$('#connect-cloud').onclick=async()=>{await cloud.connect();};$('#sync-now').onclick=async()=>{try{await cloud.sync();}catch(error){report(error);}};if(cloud.state.configured)cloud.connect();}});
+  showModal('Your little workspace',`<div class="settings-section" style="margin-top:0;border:0"><h3>iCloud, everywhere you think.</h3><p>Connect the same Apple account on Mac, iPhone and the web to keep your notes together.</p><div class="cloud-state">${icon('cloud',17)}<span id="cloud-status">${escape(cloudMessage)}</span></div><div id="apple-sign-in-button"></div><div id="apple-sign-out-button"></div><div class="settings-actions"><button type="button" class="button small" id="connect-cloud">${icon('cloud',14)} Connect iCloud</button><button type="button" class="button small" id="sync-now">${icon('restore',14)} Sync now</button></div><p class="token-note">${window.STICKEY_CLOUD_CONFIG?'Uses your private CloudKit database.':'This build saves on this device. To enable iCloud, configure the Apple container and public web token in config.js.'}</p></div><div class="settings-section"><h3>Lockable notes</h3><p>Use a note’s lock button to set a PIN or password. Protected notes also lock when you leave the app.</p>${autoLockPicker()}<button type="button" class="button small" data-action="lock-all">${icon('lock',14)} Lock all protected notes</button><p class="token-note">Apple-authenticated notes open in the native app on the Apple device where they were locked. Notes protected in this browser use a separate PIN or password.</p></div><div class="settings-section"><h3>A copy, just in case.</h3><p>Export a full backup, including groups and history. Password-protected notes stay encrypted.</p><div class="settings-actions"><button type="button" class="button small" data-action="export-backup">${icon('download',14)} Export backup</button><button type="button" class="button small" data-action="import-backup">${icon('upload',14)} Import backup</button></div></div><div class="settings-section"><h3>From a code to a thought.</h3><p>Scan a QR code or barcode from an image. Images are processed right here on your device.</p><button type="button" class="button small" data-action="scan">${icon('scan',14)} Scan an image</button></div><div class="settings-section"><h3>Small shortcuts, big help.</h3><p>⌘ / Ctrl N &nbsp; New note<br>⌘ / Ctrl T &nbsp; New checklist<br>⌘ / Ctrl K &nbsp; Search<br>Escape &nbsp; Close a note</p></div>`,{afterOpen:()=>{setupAutoLockPicker();$('#connect-cloud').onclick=async()=>{await cloud.connect();};$('#sync-now').onclick=async()=>{try{await cloud.sync();}catch(error){report(error);}};if(cloud.state.configured)cloud.connect();}});
 }
 
 function drawingMarkup() { return `<div class="drawing-tools" role="toolbar" aria-label="Drawing tools">${['30362B','376CC8','D65555'].map(color=>`<button class="pen-color ${drawingColor===color&&!erasing?'active':''}" style="--pen:#${color}" data-pen="${color}" aria-label="${color==='30362B'?'Black':color==='376CC8'?'Blue':'Red'} pen"></button>`).join('')}<input type="range" min="1" max="12" value="${drawingWidth}" id="pen-width" aria-label="Stroke width"><span class="tools-spacer"></span><button class="icon-button" id="eraser" title="Eraser" aria-label="Eraser" style="${erasing?'background:#ffffff80':''}">${icon('eraser',17)}</button><button class="icon-button" id="undo-drawing" title="Undo stroke" aria-label="Undo stroke">${icon('undo',17)}</button><button class="icon-button" id="export-drawing" title="Export sketch" aria-label="Export sketch">${icon('download',17)}</button><button class="icon-button" id="clear-drawing" title="Clear sketch" aria-label="Clear sketch">${icon('trash',16)}</button></div><canvas id="drawing-canvas" class="drawing-canvas" aria-label="Draw on your note"></canvas><p class="drawing-label">A thought doesn’t have to be made of words.</p>`; }
@@ -237,7 +290,7 @@ document.addEventListener('click',async event=>{
     case 'view-list':view='list';scheduleRender();break;
     case 'show-more':visibleLimit+=60;scheduleRender();break;
     case 'close-editor':editor.close();break;
-    case 'close-utility':utility.close();break;
+    case 'close-utility':clearUtility();break;
     case 'pin':await store.updateNote(id,n=>n.isPinned=!n.isPinned);if(utility.open)utility.close();if(editor.open)renderEditor();break;
     case 'color':chooseColor(id);break;
     case 'note-menu':noteMenu(id);break;
@@ -253,7 +306,8 @@ document.addEventListener('click',async event=>{
     case 'password':passwordDialog(id);break;
     case 'unlock':passwordDialog(id,'unlock');break;
     case 'remove-password':passwordDialog(id,'remove');break;
-    case 'relock':store.relockNote?store.relockNote(id):store.relockAll();utility.close();if(editor.open)renderEditor();break;
+    case 'lock-all':store.relockAll();toast('Protected notes locked.');break;
+    case 'relock':store.relockNote(id);utility.close();if(editor.open)renderEditor();break;
     case 'history':historyDialog(id);break;
     case 'qr':showQR(id);break;
     case 'share':exportNote(id);break;
@@ -281,9 +335,10 @@ document.addEventListener('dragstart',event=>{const card=event.target.closest('[
 document.addEventListener('dragover',event=>{const group=event.target.closest('[data-group]');if(group){event.preventDefault();group.classList.add('drop-target');}});
 document.addEventListener('dragleave',event=>event.target.closest('[data-group]')?.classList.remove('drop-target'));
 document.addEventListener('drop',async event=>{const group=event.target.closest('[data-group]');if(!group)return;event.preventDefault();group.classList.remove('drop-target');const id=event.dataTransfer.getData('text/x-stickey-note');if(noteByID(id)){await store.updateNote(id,n=>n.groupID=group.dataset.group);toast('Note moved.');}});
-editor.addEventListener('close',()=>{editorID=null;drawingVisible=false;store.flush().catch(report);scheduleRender();});
-document.addEventListener('visibilitychange',()=>{if(document.hidden){if(utility.open)utility.close();utility.innerHTML='';store.relockAll();store.flush().catch(report);if(editor.open)renderEditor();}});
-window.addEventListener('pagehide',()=>{store.relockAll();store.flush().catch(report);});
+editor.addEventListener('close',()=>{if(editor.open)return;editor.innerHTML='';editorID=null;drawingVisible=false;drawingUndo=[];store.flush().catch(report);scheduleRender();});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){clearUtility();store.relockAll();store.flush().catch(report);if(editor.open)renderEditor();}else store.lockExpiredNotes();});
+window.addEventListener('focus',()=>store.lockExpiredNotes());
+window.addEventListener('pagehide',()=>{clearUtility();store.relockAll();store.flush().catch(report);});
 window.addEventListener('resize',()=>{if(drawingVisible&&$('#drawing-canvas'))drawStrokes($('#drawing-canvas'),currentNote()?.content.strokes||[]);});
 $('#date-label').textContent=new Date().toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'});
 $('#new-note-button').innerHTML=`${icon('plus',16)} New note`;

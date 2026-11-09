@@ -9,6 +9,17 @@ class MemoryStorage {
   removeItem(key) { this.values.delete(key); }
 }
 const makeStore = (options={}) => new NoteStore({storage:new MemoryStorage(),seed:false,listen:false,...options});
+class FakeClock {
+  time=0; nextID=1; timers=new Map();
+  now=()=>this.time;
+  setTimeout=(run,delay)=>{const id=this.nextID++;this.timers.set(id,{run,at:this.time+delay});return id;};
+  clearTimeout=id=>this.timers.delete(id);
+  advance(milliseconds) {
+    const end=this.time+milliseconds;
+    while(true){const next=[...this.timers].filter(([,timer])=>timer.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!next)break;this.time=next[1].at;this.timers.delete(next[0]);next[1].run();}
+    this.time=end;
+  }
+}
 const nativeFixture = {"modifiedAt":1700000000000,"groups":[],"version":1,"notes":[{"content":{"items":[],"title":"","text":"","strokes":[]},"font":"system","updatedAt":1700000000000,"id":"F3F182B5-6384-4132-86D4-D6F5D9B2A281","kind":"text","history":[],"color":"butter","encryptedContent":{"iterations":600000,"sealedData":"QjdCwByHnyUU8ggYNZkWBkJ2Kgd\/BQpI9NCD826E3cpxVU1E50oJby751G9ESHBmdaGwP4gD9+kxT6w0L8ZiZ5Fl6sjpyKJ505N84EAG6tvX6bjd4hPPxOCC86gz7QXKNzUfc+Rx2YEuO6YZokKIox5FLCcamlYFwwGOCl76OC7tS4b8HaYjMIPgYVj++AqSLJc\/WRkI10fGUCq2zMhFphWN+p2DAHDVQ+hTBNdOXWjWvF1oJBc422km03+pBNf8VxbIz7V+UWboMXMdg\/8spdiDOljwdk7T4YtdvgRkG4\/1G1DIrN1C15HSmj46EjqZpHnj4uBq5Oxu9gJH4VQs+\/9IhWdCeFs\/CBPG18MIZu5qgHPVzd8woFU86d9ohn74pGAT4AmGYhh1OOj1+F7HTFbKo1+w0YPFc1JHSpsQUsu9Nzg7z3b41YJll5M1ERW+fxB3Q1oPBpd2o0Eg8+cMKrvxb8bM2diCUAm9\/0rOA9IYk2ct5nttE6scE38Ii0tw6DyJbkpxDbx9hB6FnuNBdwReo1hbgyIE2l0j7SkBrg==","salt":"AAECAwQFBgcICQoLDA0ODw=="},"createdAt":1700000000000,"fontSize":18,"isPinned":false}]};
 
 test('palette, fonts and seed data match native capabilities',async()=>{
@@ -175,4 +186,129 @@ test('ordinary edits cannot forge or clear the protection transition version',as
   const store=makeStore(),id=store.createNote();await store.updateNote(id,n=>{n.protectionUpdatedAt=Date.now()+10_000;n.protectionRevisionID=newID();});assert.equal(store.notes[0].protectionUpdatedAt,null);
   await store.lockNote(id,'version-password');const epoch=store.notes[0].protectionUpdatedAt,revision=store.notes[0].protectionRevisionID;
   await store.updateNote(id,n=>{n.isPinned=true;n.protectionUpdatedAt=null;n.protectionRevisionID=null;});assert.equal(store.notes[0].protectionUpdatedAt,epoch);assert.equal(store.notes[0].protectionRevisionID,revision);store.dispose();
+});
+
+test('PIN locking validates digits and keeps PIN-encrypted content private',async()=>{
+  const store=makeStore(),id=store.createNote();await store.updateNote(id,n=>n.content.text='A private PIN note');
+  for(const pin of ['123','1234567890123','12ab','１２３４'])await assert.rejects(()=>store.lockNote(id,pin,{credentialType:'pin'}),/4 to 12 digits/);
+  await assert.rejects(()=>store.lockNote(id,'1234'),/8 characters/);
+  await store.lockNote(id,'0042',{credentialType:'pin'});assert.equal(store.isLocked(id),true);
+  await assert.rejects(()=>store.unlockNote(id,'0043'));assert.equal(store.isLocked(id),true);
+  await store.unlockNote(id,'0042');assert.equal(store.notes[0].content.text,'A private PIN note');
+  assert.ok(!store.exportArchive().includes('A private PIN note'));store.dispose();
+});
+
+test('protected notes auto-lock exactly two minutes after unlock even while edited',async()=>{
+  const clock=new FakeClock(),store=makeStore({clock}),id=store.createNote();
+  await store.updateNote(id,n=>{n.content.title='Private title';n.content.text='Earlier private text';});await store.updateNote(id,n=>n.content.text='Current private text');
+  await store.lockNote(id,'0420',{credentialType:'pin'});await store.unlockNote(id,'0420');assert.equal(store.autoLockSeconds,120);
+  clock.advance(119_000);await store.updateNote(id,n=>n.content.text='Last edit');clock.advance(999);assert.equal(store.isLocked(id),false);
+  clock.advance(1);assert.equal(store.isLocked(id),true);assert.deepEqual(store.notes[0].content,emptyContent());assert.deepEqual(store.notes[0].history,[]);
+  await store.flush();await store.unlockNote(id,'0420');assert.equal(store.notes[0].content.text,'Last edit');assert.ok(store.notes[0].history.length);
+  clock.advance(119_999);assert.equal(store.isLocked(id),false);clock.advance(1);assert.equal(store.isLocked(id),true);store.dispose();assert.equal(clock.timers.size,0);
+});
+
+test('auto-lock settings persist locally and changes apply from the original unlock time',async()=>{
+  const storage=new MemoryStorage(),clock=new FakeClock(),store=makeStore({storage,clock}),id=store.createNote();
+  await store.lockNote(id,'1234',{credentialType:'pin'});await store.unlockNote(id,'1234');clock.advance(40_000);
+  store.autoLockSeconds=300;clock.advance(80_000);assert.equal(store.isLocked(id),false);
+  store.autoLockSeconds=60;assert.equal(store.isLocked(id),true);
+  assert.throws(()=>store.autoLockSeconds=0,/auto-lock/);assert.equal(store.autoLockSeconds,60);
+  const reloaded=makeStore({storage});assert.equal(reloaded.autoLockSeconds,60);assert.equal(reloaded.isLocked(id),true);
+  const imported=makeStore();await imported.importArchive(store.exportArchive());assert.equal(imported.autoLockSeconds,120);
+  store.dispose();reloaded.dispose();imported.dispose();
+});
+
+test('protected duplicates inherit the original auto-lock deadline',async()=>{
+  const clock=new FakeClock(),store=makeStore({clock}),id=store.createNote();await store.updateNote(id,n=>n.content.text='Duplicated secret');
+  await store.lockNote(id,'6789',{credentialType:'pin'});await store.unlockNote(id,'6789');clock.advance(90_000);
+  const duplicate=await store.duplicateNote(id);assert.equal(store.isLocked(duplicate),false);
+  clock.advance(30_000);assert.equal(store.isLocked(id),true);assert.equal(store.isLocked(duplicate),true);assert.equal(clock.timers.size,0);
+  await store.unlockNote(duplicate,'6789');assert.equal(store.notes.find(n=>n.id===duplicate).content.text,'Duplicated secret');store.dispose();
+});
+
+test('manual relock cancels its timer and removing protection leaves content editable',async()=>{
+  const clock=new FakeClock(),store=makeStore({clock}),id=store.createNote();await store.updateNote(id,n=>n.content.text='Keep after removal');
+  await store.lockNote(id,'9876',{credentialType:'pin'});await store.unlockNote(id,'9876');clock.advance(60_000);store.relockAll();assert.equal(clock.timers.size,0);
+  await store.unlockNote(id,'9876');clock.advance(60_000);assert.equal(store.isLocked(id),false);
+  await store.removePassword(id,'9876');assert.equal(clock.timers.size,0);clock.advance(600_000);assert.equal(store.notes[0].content.text,'Keep after removal');assert.equal(store.notes[0].encryptedContent,null);store.dispose();
+});
+
+test('expired notes lock on resume even if the browser delayed the timer',async()=>{
+  const clock=new FakeClock(),store=makeStore({clock}),id=store.createNote();await store.lockNote(id,'1111',{credentialType:'pin'});await store.unlockNote(id,'1111');
+  clock.time=180_000;store.lockExpiredNotes();assert.equal(store.isLocked(id),true);assert.equal(clock.timers.size,0);store.dispose();
+});
+
+test('immediate background lock cancels unlock before pending saves settle',async()=>{
+  const store=makeStore(),id=store.createNote();await store.lockNote(id,'2222',{credentialType:'pin'});
+  const unlock=store.unlockNote(id,'2222');store.relockAll();await assert.rejects(()=>unlock,/changed/);assert.equal(store.isLocked(id),true);store.dispose();
+});
+
+test('lengthening the timeout cannot revive an expired session when timers are delayed',async()=>{
+  for(const crossTab of [false,true]){
+    const clock=new FakeClock(),store=makeStore({clock}),id=store.createNote();await store.lockNote(id,'3333',{credentialType:'pin'});await store.unlockNote(id,'3333');
+    clock.time=121_000;
+    if(crossTab)store._storageListener({key:STORAGE_KEY+'.autoLockSeconds',newValue:'300'});else store.autoLockSeconds=300;
+    assert.equal(store.isLocked(id),true);assert.equal(store.autoLockSeconds,300);assert.equal(clock.timers.size,0);store.dispose();
+  }
+});
+
+test('overdue content edits, duplication, and history restore require fresh authentication',async()=>{
+  const clock=new FakeClock(),store=makeStore({clock}),id=store.createNote();
+  await store.updateNote(id,n=>n.content.text='Earlier secret');await store.updateNote(id,n=>n.content.text='Current secret');const snapshot=store.notes[0].history[0].id;
+  await store.lockNote(id,'4444',{credentialType:'pin'});
+  for(const operation of [()=>store.updateNote(id,n=>n.content.text='Should not save'),()=>store.duplicateNote(id),()=>store.restoreSnapshot(id,snapshot)]){
+    await store.unlockNote(id,'4444');clock.time+=121_000;
+    await assert.rejects(operation,/Unlock/);assert.equal(store.isLocked(id),true);assert.equal(store.notes[0].content.text,'');
+  }
+  await store.unlockNote(id,'4444');assert.equal(store.notes[0].content.text,'Current secret');store.dispose();
+});
+
+test('fresh authentication after an overdue session receives a new complete timeout',async()=>{
+  const clock=new FakeClock(),store=makeStore({clock}),id=store.createNote();await store.lockNote(id,'5555',{credentialType:'pin'});await store.unlockNote(id,'5555');
+  clock.time=121_000;await store.unlockNote(id,'5555');assert.equal(store.isLocked(id),false);
+  clock.advance(119_999);assert.equal(store.isLocked(id),false);clock.advance(1);assert.equal(store.isLocked(id),true);store.dispose();
+});
+
+test('system clock rollback cannot extend access and sleep still expires a session',async t=>{
+  let wall=1_700_000_000_000,steady=0;
+  t.mock.method(Date,'now',()=>wall);t.mock.method(performance,'now',()=>steady);
+  const store=makeStore(),id=store.createNote();await store.lockNote(id,'6666',{credentialType:'pin'});await store.unlockNote(id,'6666');
+  wall-=3_600_000;steady+=120_000;store.lockExpiredNotes();assert.equal(store.isLocked(id),true);
+  await store.unlockNote(id,'6666');wall+=120_000;store.lockExpiredNotes();assert.equal(store.isLocked(id),true);store.dispose();
+});
+
+test('Apple authentication metadata survives browser import, edits, backup, reload, and merge',async()=>{
+  const archive=structuredClone(nativeFixture),credentialID=newID(),id=archive.notes[0].id;
+  Object.assign(archive.notes[0].encryptedContent,{credentialKind:'apple',credentialID:credentialID.toLowerCase()});
+  const storage=new MemoryStorage(),store=makeStore({storage});await store.importArchive(archive);
+  await store.updateNote(id,n=>{n.isPinned=true;n.color='rose';});await store.flush();
+  const exported=JSON.parse(store.exportArchive()).notes[0];
+  assert.equal(exported.encryptedContent.credentialKind,'apple');assert.equal(exported.encryptedContent.credentialID,credentialID);
+  assert.equal(exported.encryptedContent.sealedData,archive.notes[0].encryptedContent.sealedData);
+  assert.deepEqual(exported.content,emptyContent());assert.deepEqual(exported.history,[]);
+  const reloaded=makeStore({storage});assert.equal(reloaded.notes[0].encryptedContent.credentialID,credentialID);assert.equal(reloaded.isLocked(id),true);
+  const other=makeStore();await other.mergeArchive(store.exportArchive());assert.deepEqual(other.notes[0].encryptedContent,exported.encryptedContent);
+  store.dispose();reloaded.dispose();other.dispose();
+});
+
+test('Apple-authenticated notes cannot be unlocked or unprotected with browser password entry',async()=>{
+  const archive=structuredClone(nativeFixture),id=archive.notes[0].id;
+  Object.assign(archive.notes[0].encryptedContent,{credentialKind:'apple',credentialID:newID()});
+  const store=makeStore();await store.importArchive(archive);
+  // Even the fixture's actual decryption credential must not be offered as a web fallback.
+  await assert.rejects(()=>store.unlockNote(id,'native-password-123'),/Apple device/);
+  await assert.rejects(()=>store.removePassword(id,'native-password-123'),/Apple device/);
+  assert.equal(store.isLocked(id),true);assert.equal(store.notes[0].encryptedContent.credentialKind,'apple');
+  assert.deepEqual(store.notes[0].content,emptyContent());store.dispose();
+});
+
+test('invalid and incomplete Apple credential metadata is rejected without reclassifying it',()=>{
+  for(const metadata of [{credentialKind:'apple'},{credentialID:newID()},{credentialKind:'apple',credentialID:'broken'},
+    {credentialKind:'other',credentialID:newID()}]){
+    const archive=structuredClone(nativeFixture);Object.assign(archive.notes[0].encryptedContent,metadata);
+    assert.throws(()=>validateArchive(archive),/valid StickeyNote backup/);
+  }
+  const legacy=validateArchive(nativeFixture).notes[0].encryptedContent;
+  assert.equal(legacy.credentialKind,undefined);assert.equal(legacy.credentialID,undefined);
 });

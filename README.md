@@ -12,19 +12,19 @@ The native apps use SwiftUI, AppKit, and UIKit. The offline-capable web app uses
 - Rich text formatting, font choices, text sizing, and 25 note colors.
 - Drawing over note text with adjustable pens, an eraser, undo/redo, and PNG export.
 - Version history, restore, duplication, recoverable deletion, and JSON backup/import.
-- Password-encrypted note content and history, with optional biometric unlock on Apple devices.
+- Encrypted native note locks using Apple’s system Touch ID / Face ID or device password/passcode prompt. Protected notes automatically lock after two minutes; choose 30 seconds to 15 minutes in Settings. Existing note PINs/passwords remain supported.
 - QR generation and export, image scanning, and camera scanning on supported iPhones and iPads. Browser barcode support varies; QR image scanning includes an offline fallback.
 - Editable, draggable, resizable Mac desktop notes that restore their positions on relaunch. Choose **Keep on desktop** from a note; closing its desktop window keeps the note in your library.
 - Small, medium, and large WidgetKit widgets. Protected notes are excluded from widget previews.
 - Optional private iCloud sync with offline merging and interrupted-upload recovery.
 
-Browsers do not support native Apple widgets or Keychain biometric unlock. Password unlock is available on all clients. Storage capacity depends on the device or browser; the app imposes no artificial note-count limit.
+Browsers do not support native Apple widgets or the native Apple authentication dialog. Browser-created PIN/password locks work across clients. Apple-authenticated locks use a device-only Keychain credential and can be unlocked on the Apple device that created them; other clients preserve their ciphertext. Storage capacity depends on the device or browser; the app imposes no artificial note-count limit.
 
 ## Requirements
 
 - **Native apps:** macOS 14+ or iOS/iPadOS 17+, with Xcode and a Swift 5.9+ toolchain for development.
 - **Web app:** a modern browser and Python 3 for the local preview server. Node.js 20+ is used for builds and tests.
-- **Optional iCloud sync and widget distribution:** an Apple Developer account and provisioned app/extension targets.
+- **Apple note authentication, optional iCloud sync, and widgets:** an Apple Developer account and provisioned app targets (plus the extension target for widgets).
 
 ## Run it
 
@@ -37,7 +37,9 @@ zsh scripts/build-mac.sh
 open 'build/Stickey Notes.app'
 ```
 
-This produces an optimized, ad-hoc-signed local app with local editing, drawings, passwords, QR tools, and floating desktop windows. iCloud and installed widgets require the provisioned Xcode build. The local preview intentionally keeps iCloud unavailable.
+This builds the **StickeyNotePreview** scheme and produces a signed local app with Apple note authentication, editing, drawings, QR tools, and floating desktop windows. The preview uses development team `8ZA2YW2U9D`; the full app and widget targets retain their own signing configuration. The first build uses the Apple developer account configured in Xcode to register the Mac and create a development profile for `com.stickeynote.app.preview`; subsequent builds reuse the profile. Apple note locking requires this profile and its Keychain entitlement—ad-hoc signing cannot access the protected key store. The preview keeps iCloud unavailable; iCloud and widgets use the full **StickeyNote** scheme. It retains the preview bundle identifier and existing local notes location. Keep the signing team stable after creating Apple-locked notes, because changing teams changes access to their Keychain credentials.
+
+If Xcode reports **PLA Update available**, the team's Account Holder must accept the latest agreement in the [Apple Developer account](https://developer.apple.com/account), then rerun the build. To use another configured team, pass `DEVELOPMENT_TEAM=YOUR_TEAM_ID` to the build script. A failed signing build leaves the existing app in place.
 
 ### iPhone / iPad / provisioned Mac
 
@@ -87,7 +89,13 @@ See [the integration guide](Sources/StickeyNote/Integrations/README.md) for prot
 
 ## Security and persistence
 
-Password protection uses PBKDF2-HMAC-SHA256 (600,000 iterations, random 16-byte salt), AES-256-GCM, and note-ID authenticated data. Decrypted content stays in memory while unlocked; saves, backups, and sync receive ciphertext. Backgrounding locks protected notes and cancels in-flight unlock results. Biometric secrets require the current enrolled biometric set and never sync.
+In the native app, choose **Lock note** in a note’s toolbar or menu. Apple’s system prompt verifies you with Touch ID or your Mac login password, or Face ID / Touch ID or your iPhone/iPad passcode. There is no separate note PIN setup, and the app never receives the device password. **Unlock** opens the same system authentication flow. Locked notes hide their title, content, and history. Existing note PIN/password locks continue to work; after unlocking, choose **Use Apple authentication** in Lock settings to convert them without exposing plaintext backups.
+
+The auto-lock timer starts after each successful unlock and defaults to two minutes, including while editing. Choose **Auto-lock after** in Settings or the note's lock settings to change the interval for protected notes on this device. Changes apply to notes that are already unlocked; shortening the interval can lock them immediately. The preference is saved locally. Backgrounding also locks protected notes.
+
+Note protection uses PBKDF2-HMAC-SHA256 (600,000 iterations, random 16-byte salt), AES-256-GCM, and note-ID authenticated data. New native locks generate a random 256-bit credential stored in the device-only Keychain with `userPresence` access control. A fresh `LAContext` uses `deviceOwnerAuthentication`; the authenticated context retrieves the Keychain credential, and is then invalidated. Apple provides the biometric and device password/passcode fallback UI. Decrypted content stays in memory while unlocked; saves, backups, and sync receive ciphertext. Locking cancels in-flight unlock results.
+
+Apple lock credentials never sync or appear in backups. Apple-locked notes and their backups require the original device’s Keychain; loss of that credential cannot be recovered. Protected duplicates retain the same credential reference, so keys are kept for older backups and copies. Browser PIN/password notes and legacy native locks retain the existing encryption format; their PINs/passwords cannot be recovered.
 
 Saves are debounced and backed up, with atomic native writes. Damaged files are preserved for recovery. CloudKit commits a manifest only after all immutable chunks are saved and verifies SHA-256 when reading. Protection transitions have separate revisions so newer stale plaintext metadata cannot silently remove a lock. Cloud sync is bound to the selected Apple account.
 
@@ -105,7 +113,7 @@ xcodebuild -project StickeyNote.xcodeproj -scheme StickeyNote \
   -destination 'generic/platform=iOS Simulator' -derivedDataPath build/xcode-ios CODE_SIGNING_ALLOWED=NO build
 ```
 
-Tests cover persistence/recovery, encryption, background-lock races, history, deletion, conflict ordering, chunk integrity, failed uploads, and Swift/JavaScript interoperability. Live iCloud, physical-device Face ID/camera, and installed widget behavior still require provisioned-account/device validation.
+Tests cover persistence/recovery, PIN validation, encryption, auto-lock deadlines and settings, background-lock races, history, deletion, conflict ordering, chunk integrity, failed uploads, and Swift/JavaScript interoperability. Live iCloud, physical-device Touch ID / Face ID/camera, and installed widget behavior still require provisioned-account/device validation.
 
 ## Acknowledgments
 

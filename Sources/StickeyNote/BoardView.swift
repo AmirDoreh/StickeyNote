@@ -233,7 +233,8 @@ struct BoardView: View {
     @ViewBuilder private func noteMenu(_ note: StickyNote) -> some View {
         if note.deletedAt != nil { Button("Restore note", systemImage: "arrow.uturn.backward") { store.restoreNote(note.id) } }
         else {
-            Button("Open", systemImage: "arrow.up.right.square") { store.selectedNoteID = note.id }
+            Button(store.isLocked(note.id) ? "Unlock note" : "Open", systemImage: store.isLocked(note.id) ? "lock.open" : "arrow.up.right.square") { store.selectedNoteID = note.id }
+            if note.isPasswordProtected && !store.isLocked(note.id) { Button("Lock now", systemImage: "lock") { store.relockNote(note.id) } }
             Button(note.isPinned ? "Unpin" : "Pin note", systemImage: note.isPinned ? "pin.slash" : "pin") { store.updateNote(note.id) { $0.isPinned.toggle() } }
             Button("Duplicate", systemImage: "doc.on.doc") { _ = store.duplicateNote(note.id) }
             #if os(macOS)
@@ -267,9 +268,13 @@ struct NoteCard: View {
                 if note.isPasswordProtected && !locked { Image(systemName: "lock.open") }
                 Button(action: onOpen) { Image(systemName: "arrow.up.right").opacity(hovering ? 1 : 0.3) }.buttonStyle(.plain).accessibilityLabel("Open \(note.displayTitle)")
             }.font(.system(size: 11)).foregroundStyle(Palette.ink.opacity(0.56))
-            Text(locked ? "A little privacy." : note.displayTitle).font(.system(size: compact ? 19 : 22, weight: .semibold, design: .rounded)).lineLimit(2).lineSpacing(2)
+            Text(locked ? "Note locked" : note.displayTitle).font(.system(size: compact ? 19 : 22, weight: .semibold, design: .rounded)).lineLimit(2).lineSpacing(2)
             if locked {
-                VStack(spacing: 12) { Image(systemName: "lock.shield").font(.system(size: 32, weight: .ultraLight)); Text("Password protected").font(.system(size: 12)) }.foregroundStyle(Palette.ink.opacity(0.5)).frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: compact ? 6 : 12) {
+                    if !compact { Image(systemName: "lock.shield").font(.system(size: 32, weight: .ultraLight)) }
+                    Text("Unlock to view this note").font(.system(size: 12))
+                    Button(action: onOpen) { Label("Unlock", systemImage: "lock.open").font(.system(size: 12, weight: .semibold)) }.buttonStyle(PillButtonStyle())
+                }.foregroundStyle(Palette.ink.opacity(0.7)).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if note.kind == .checklist {
                 VStack(alignment: .leading, spacing: 11) {
                     ForEach(note.content.items.prefix(compact ? 3 : 5)) { item in

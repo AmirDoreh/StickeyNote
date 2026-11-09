@@ -15,8 +15,14 @@ struct NoteDetailView: View {
     @State private var password = ""
     @State private var error: String?
     @State private var busy = false
+    @State private var appleTask: Task<Void, Never>?
+    @State private var appleOperation = UUID()
+    @State private var unlockAttempt = UUID()
+    @State private var authenticationScenePhase: ScenePhase = .active
     @State private var export = false
     private var note: StickyNote? { store.notes.first { $0.id == noteID } }
+    private var usesAppleAuthentication: Bool { note?.usesAppleAuthentication == true }
+    private var isBusy: Bool { busy || appleTask != nil }
     var body: some View {
         Group {
             if let note {
@@ -40,9 +46,9 @@ struct NoteDetailView: View {
                     }
                     bottomBar(note)
                 }.background(Palette.paper).foregroundStyle(Palette.ink)
-                    .sheet(isPresented: $showQR) { QRCodeView(text: note.content.plainText) }
+                    .sheet(isPresented: $showQR) { ProtectedNoteQRCodeView(store: store, noteID: noteID) }
                     .sheet(isPresented: $showHistory) { HistoryView(store: store, noteID: noteID) }
-                    .sheet(isPresented: $showLock) { PasswordSheet(store: store, noteID: noteID) }
+                    .sheet(isPresented: $showLock) { NoteLockSettingsView(store: store, noteID: noteID) }
                     .popover(isPresented: $showAppearance) { appearance(note).padding(22).frame(width: 295) }
                     .fileExporter(isPresented: $export, document: PlainTextDocument(text: note.content.plainText), contentType: .plainText, defaultFilename: note.displayTitle + ".txt") { result in if case let .failure(e) = result { error = e.localizedDescription } }
             } else { EmptyState(symbol: "note.text", title: "Note unavailable", message: "This note may have been removed on another device.") }
@@ -52,8 +58,17 @@ struct NoteDetailView: View {
         #endif
         .alert("Couldn’t complete that action", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { showQR = false; showHistory = false; showLock = false; password = "" }
+            authenticationScenePhase = phase
+            #if os(iOS)
+            if phase == .background { cancelAppleOperation(); clearPrivatePresentation(); showLock = false }
+            #else
+            if phase != .active && !AppleNoteSecurity.isPresentingSystemPrompt { cancelAppleOperation(); clearPrivatePresentation(); showLock = false }
+            #endif
         }
+        .onChange(of: store.isLocked(noteID)) { _, locked in if locked { clearPrivatePresentation() } }
+        .onAppear { authenticationScenePhase = scenePhase }
+        .onDisappear { cancelAppleOperation(); clearPrivatePresentation() }
+        .modifier(InactiveNotePrivacy())
     }
     private func topBar(_ note: StickyNote) -> some View {
         HStack(spacing: 8) {
@@ -70,6 +85,9 @@ struct NoteDetailView: View {
                 IconButton(symbol: "macwindow.on.rectangle", help: "Keep on desktop") { FloatingNoteWindows.shared.pin(noteID) }
                 #endif
                 IconButton(symbol: "paintpalette", help: "Note appearance") { showAppearance = true }
+                IconButton(symbol: "lock", help: note.isPasswordProtected ? "Lock note now" : "Lock with Apple authentication") {
+                    if note.isPasswordProtected { store.relockNote(noteID) } else { runAppleOperation(protect: true) }
+                }.disabled(isBusy)
                 Menu {
                     Button("Show QR code", systemImage: "qrcode") { showQR = true }
                     ShareLink(item: note.content.plainText) { Label("Share note", systemImage: "square.and.arrow.up") }
@@ -78,7 +96,9 @@ struct NoteDetailView: View {
                     Button("Keep on desktop", systemImage: "macwindow.on.rectangle") { FloatingNoteWindows.shared.pin(noteID) }
                     #endif
                     Button("Version history", systemImage: "clock.arrow.circlepath") { showHistory = true }
-                    Button(note.isPasswordProtected ? "Password settings" : "Protect with password", systemImage: "lock") { showLock = true }
+                    Button(note.isPasswordProtected ? "Lock settings" : "Lock note", systemImage: "lock") {
+                        if note.isPasswordProtected { showLock = true } else { runAppleOperation(protect: true) }
+                    }.disabled(isBusy)
                     if note.isPasswordProtected { Button("Lock now", systemImage: "lock.fill") { store.relockNote(noteID) } }
                     Button("Duplicate note", systemImage: "doc.on.doc") { _ = store.duplicateNote(noteID) }
                     Divider()
@@ -106,18 +126,27 @@ struct NoteDetailView: View {
         VStack(spacing: 18) {
             Spacer()
             Image(systemName: "lock.shield").font(.system(size: 48, weight: .ultraLight)).foregroundStyle(Palette.secondary)
-            Text("Just for you.").font(.system(size: 28, weight: .medium, design: .serif))
-            Text("Enter your password to open this note.").font(.system(size: 13)).foregroundStyle(Palette.secondary)
-            SecureField("Password", text: $password).textFieldStyle(.roundedBorder).frame(maxWidth: 280).onSubmit(unlock)
-            Button(action: unlock) { if busy { ProgressView().controlSize(.small) } else { Text("Unlock note") } }.buttonStyle(PillButtonStyle(filled: true)).disabled(password.isEmpty || busy)
-            if BiometricNoteKeys.hasCredential(noteID: noteID) { Button("Use Face ID / Touch ID") { biometricUnlock() }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Palette.secondary).disabled(busy) }
+            Text("Note locked").font(.system(size: 28, weight: .medium, design: .serif))
+            Text(usesAppleAuthentication ? AppleAuthenticationCopy.unlockDescription : "Enter this note’s existing PIN or password.").font(.system(size: 13)).foregroundStyle(Palette.secondary)
+            if !usesAppleAuthentication {
+                SecureField("Note PIN or password", text: $password).textFieldStyle(.roundedBorder).frame(maxWidth: 280).onSubmit(unlock)
+            }
+            Button {
+                if usesAppleAuthentication { runAppleOperation(protect: false) } else { unlock() }
+            } label: {
+                if isBusy { ProgressView().controlSize(.small) } else { Text("Unlock note") }
+            }.buttonStyle(PillButtonStyle(filled: true)).disabled(isBusy || (!usesAppleAuthentication && password.isEmpty))
+            if !usesAppleAuthentication && BiometricNoteKeys.hasCredential(noteID: noteID) {
+                Button(BiometricAuthentication.label) { biometricUnlock() }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Palette.secondary).disabled(isBusy)
+            }
+            Text("Locks again after \(NoteLockDuration.label(store.autoLockSeconds)).").font(.system(size: 11)).foregroundStyle(Palette.secondary)
             Spacer()
         }.frame(maxWidth: .infinity).padding(30)
     }
     private func bottomBar(_ note: StickyNote) -> some View {
         HStack(spacing: 6) {
             Image(systemName: note.isPasswordProtected ? "lock.shield" : "checkmark.circle").font(.system(size: 11))
-            Text(store.saveStatus).font(.system(size: 11))
+            Text(store.isLocked(noteID) ? "Locked" : note.isPasswordProtected ? "Auto-lock: \(NoteLockDuration.label(store.autoLockSeconds))" : store.saveStatus).font(.system(size: 11))
             Spacer()
             if !store.isLocked(noteID) { Text("\(note.content.text.split { $0.isWhitespace || $0.isNewline }.count) words").font(.system(size: 11)) }
             Text("·").padding(.horizontal, 4)
@@ -147,63 +176,179 @@ struct NoteDetailView: View {
         Binding(get: { note?.content[keyPath: keyPath] ?? fallback }, set: { value in store.updateNote(noteID) { $0.content[keyPath: keyPath] = value } })
     }
     private func unlock() {
-        busy = true
-        Task { do { try await store.unlockNote(noteID, password: password); password = "" } catch { self.error = error.localizedDescription }; busy = false }
-    }
-    private func biometricUnlock() {
+        guard !password.isEmpty, !busy else { return }
+        let secret = password
+        let generation = store.securityGenerationToken(for: noteID)
+        let attempt = UUID()
+        unlockAttempt = attempt
         busy = true
         Task {
             do {
-                let secret = try await Task.detached { try BiometricNoteKeys.retrieve(noteID: noteID) }.value
-                try await store.unlockNote(noteID, password: secret)
-            } catch { self.error = error.localizedDescription }
-            busy = false
+                guard unlockAttempt == attempt else { return }
+                try await store.unlockNote(noteID, password: secret, expectedGeneration: generation); password = ""
+            }
+            catch { if unlockAttempt == attempt { self.error = error.localizedDescription } }
+            if unlockAttempt == attempt { busy = false }
         }
+    }
+    private func biometricUnlock() {
+        guard !busy else { return }
+        let id = noteID
+        let generation = store.securityGenerationToken(for: id)
+        let attempt = UUID()
+        unlockAttempt = attempt
+        busy = true
+        Task {
+            do {
+                let secret = try await Task.detached { try BiometricNoteKeys.retrieve(noteID: id) }.value
+                #if os(iOS)
+                // Face ID temporarily makes the scene inactive. Keep the
+                // authenticated result private until the app is active again.
+                while authenticationScenePhase == .inactive && unlockAttempt == attempt {
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                #endif
+                guard unlockAttempt == attempt, authenticationScenePhase == .active else { return }
+                try await store.unlockNote(id, password: secret, expectedGeneration: generation)
+            } catch { if unlockAttempt == attempt { self.error = error.localizedDescription } }
+            if unlockAttempt == attempt { busy = false }
+        }
+    }
+    private func runAppleOperation(protect: Bool) {
+        guard !isBusy else { return }
+        let operation = UUID()
+        appleOperation = operation
+        error = nil
+        appleTask = Task {
+            do {
+                if protect { try await AppleNoteSecurity.protect(store: store, noteID: noteID) }
+                else { try await AppleNoteSecurity.unlock(store: store, noteID: noteID) }
+            } catch {
+                if appleOperation == operation && !Task.isCancelled && !(error is CancellationError) { self.error = error.localizedDescription }
+            }
+            if appleOperation == operation { appleTask = nil }
+        }
+    }
+    private func cancelAppleOperation() {
+        appleOperation = UUID()
+        appleTask?.cancel()
+        appleTask = nil
+    }
+    private func clearPrivatePresentation() {
+        let wasUnlocking = busy
+        showQR = false; showHistory = false; showAppearance = false; export = false
+        password = ""; error = nil; busy = false; unlockAttempt = UUID()
+        if wasUnlocking { store.relockNote(noteID) }
     }
 }
 
-struct PasswordSheet: View {
+/// Observe the store inside the presented view so an auto-lock immediately
+/// removes the QR image, including while the sheet is animating closed.
+private struct ProtectedNoteQRCodeView: View {
+    @Bindable var store: NoteStore
+    let noteID: UUID
+    var body: some View {
+        Group {
+            if !store.isLocked(noteID), let note = store.notes.first(where: { $0.id == noteID }) {
+                QRCodeView(text: note.content.plainText)
+            } else { Text("Note locked").padding(30) }
+        }.modifier(InactiveNotePrivacy())
+    }
+}
+
+struct NoteLockSettingsView: View {
     @Bindable var store: NoteStore
     let noteID: UUID
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var password = ""
-    @State private var confirm = ""
-    @State private var biometrics = false
-    @State private var busy = false
+    @State private var task: Task<Void, Never>?
+    @State private var operation = UUID()
     @State private var error: String?
-    private var protected: Bool { store.notes.first { $0.id == noteID }?.isPasswordProtected ?? false }
+    private var note: StickyNote? { store.notes.first { $0.id == noteID } }
+    private var usesAppleAuthentication: Bool { note?.usesAppleAuthentication == true }
+    private var isProtected: Bool { note?.isPasswordProtected == true }
     var body: some View {
+        Group {
+            #if os(macOS)
+            form.fixedSize(horizontal: false, vertical: true)
+            #else
+            ScrollView { form }.scrollDismissesKeyboard(.interactively)
+            #endif
+        }.frame(idealWidth: 440)
+            .onChange(of: scenePhase) { _, phase in
+                #if os(iOS)
+                if phase == .background { cancelOperation(); dismiss() }
+                #else
+                if phase != .active && !AppleNoteSecurity.isPresentingSystemPrompt { cancelOperation(); dismiss() }
+                #endif
+            }
+            .onChange(of: store.isLocked(noteID)) { _, locked in if locked { password = "" } }
+            .onDisappear { cancelOperation() }
+            .modifier(InactiveNotePrivacy())
+    }
+    private var form: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack { Image(systemName: "lock.shield").font(.system(size: 27, weight: .light)); Spacer(); IconButton(symbol: "xmark", help: "Close password settings") { dismiss() } }
-            Text(protected ? "Password settings" : "A little peace of mind.").font(.system(size: 25, weight: .semibold, design: .rounded))
-            Text(protected ? "Enter the current password to remove protection or enable biometric unlock on this device." : "Your note and its history are encrypted. Keep your password somewhere safe; it cannot be recovered.").font(.system(size: 13)).foregroundStyle(Palette.secondary)
-            SecureField(protected ? "Current password" : "Password (at least 8 characters)", text: $password).textFieldStyle(.roundedBorder)
-            if !protected { SecureField("Confirm password", text: $confirm).textFieldStyle(.roundedBorder) }
-            Toggle("Allow Face ID / Touch ID on this device", isOn: $biometrics).font(.system(size: 12))
+            HStack { Image(systemName: "lock.shield").font(.system(size: 27, weight: .light)); Spacer(); IconButton(symbol: "xmark", help: "Close lock settings") { dismiss() } }
+            Text("Lock settings").font(.system(size: 25, weight: .semibold, design: .rounded))
+            if usesAppleAuthentication {
+                Text(AppleAuthenticationCopy.unlockDescription).font(.system(size: 13)).foregroundStyle(Palette.secondary)
+                Text("Apple verifies your identity in its system prompt. This note’s unlock key stays on this device.").font(.system(size: 12)).foregroundStyle(Palette.secondary)
+            } else if isProtected {
+                Text("This note uses an existing note PIN or password. You can switch it to Apple’s system authentication on this device.").font(.system(size: 13)).foregroundStyle(Palette.secondary)
+                Button("Use Apple authentication") { run(remove: false) }.buttonStyle(PillButtonStyle(filled: true)).disabled(task != nil || store.isLocked(noteID))
+                SecureField("Current note PIN or password", text: $password).textFieldStyle(.roundedBorder)
+                Text("Only needed to remove the existing lock.").font(.system(size: 11)).foregroundStyle(Palette.secondary)
+            }
+            NoteAutoLockPicker(store: store)
+            Text("Applies to all protected notes on this device, from the time you unlock each note.").font(.system(size: 11)).foregroundStyle(Palette.secondary)
             if let error { Text(error).font(.system(size: 12)).foregroundStyle(.red) }
             HStack {
-                if protected { Button("Remove password", role: .destructive) { run(remove: true) }.disabled(password.isEmpty || busy) }
+                if isProtected {
+                    Button("Remove lock", role: .destructive) { run(remove: true) }.disabled(task != nil || (!usesAppleAuthentication && password.isEmpty))
+                } else {
+                    Button("Lock note") { run(remove: false) }.buttonStyle(PillButtonStyle(filled: true)).disabled(task != nil)
+                }
                 Spacer()
-                Button(protected ? "Save" : "Protect note") { run(remove: false) }.buttonStyle(PillButtonStyle(filled: true)).disabled(busy || password.isEmpty || (!protected && (password.count < 8 || password != confirm)))
+                Button("Done") { dismiss() }.buttonStyle(PillButtonStyle()).disabled(task != nil)
             }
-            if busy { ProgressView().controlSize(.small) }
-        }.padding(30).frame(idealWidth: 440).fixedSize(horizontal: false, vertical: true)
-            .onAppear { biometrics = BiometricNoteKeys.hasCredential(noteID: noteID) }
+            if task != nil { ProgressView().controlSize(.small) }
+        }.padding(30)
     }
     private func run(remove: Bool) {
-        busy = true
-        Task {
+        guard task == nil else { return }
+        let credential = password
+        let apple = usesAppleAuthentication
+        let attempt = UUID()
+        operation = attempt
+        error = nil
+        task = Task {
             do {
-                if remove { try await store.removePassword(noteID, password: password); BiometricNoteKeys.remove(noteID: noteID) }
-                else {
-                    if protected { try await store.unlockNote(noteID, password: password) } else { try await store.lockNote(noteID, password: password) }
-                    if biometrics { try BiometricNoteKeys.save(password: password, noteID: noteID) }
-                    else { BiometricNoteKeys.remove(noteID: noteID) }
+                try Task.checkCancellation()
+                if remove {
+                    if apple { try await AppleNoteSecurity.removeProtection(store: store, noteID: noteID) }
+                    else {
+                        try await store.removePassword(noteID, password: credential)
+                        BiometricNoteKeys.remove(noteID: noteID)
+                    }
+                } else { try await AppleNoteSecurity.protect(store: store, noteID: noteID) }
+                guard !Task.isCancelled, operation == attempt else { return }
+                password = ""; task = nil; dismiss()
+            } catch {
+                if operation == attempt {
+                    if !Task.isCancelled && !(error is CancellationError) { self.error = error.localizedDescription }
+                    task = nil
                 }
-                password = ""; confirm = ""; dismiss()
-            } catch { self.error = error.localizedDescription }
-            busy = false
+            }
         }
+    }
+    private func cancelOperation() {
+        operation = UUID()
+        if task != nil {
+            task?.cancel()
+            store.relockNote(noteID)
+        }
+        task = nil; password = ""
     }
 }
 
@@ -219,7 +364,9 @@ struct HistoryView: View {
         let layout = compact ? AnyLayout(VStackLayout(alignment: .leading, spacing: 16)) : AnyLayout(HStackLayout(alignment: .top, spacing: 16))
         return VStack(alignment: .leading, spacing: 20) {
             HStack { VStack(alignment: .leading, spacing: 6) { Text("A little time travel.").font(.system(size: 26, weight: .semibold, design: .rounded)); Text("Revisit an earlier version of your note.").font(.system(size: 12)).foregroundStyle(Palette.secondary) }; Spacer(); IconButton(symbol: "xmark", help: "Close history") { dismiss() } }
-            if let note, !note.history.isEmpty {
+            if store.isLocked(noteID) {
+                EmptyState(symbol: "lock.shield", title: "Note locked", message: "Unlock this note to view its history.")
+            } else if let note, !note.history.isEmpty {
                 layout {
                     ScrollView {
                         VStack(spacing: 7) {
@@ -237,6 +384,7 @@ struct HistoryView: View {
                 }
             } else { EmptyState(symbol: "clock.arrow.circlepath", title: "Your story starts here.", message: "Earlier versions appear as you edit. Restoring a version also preserves your current note.") }
         }.padding(26).frame(idealWidth: 650, minHeight: 420, idealHeight: 520)
+            .modifier(InactiveNotePrivacy())
     }
 }
 

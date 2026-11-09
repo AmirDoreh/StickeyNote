@@ -4,6 +4,12 @@ import XCTest
 @MainActor
 final class NoteStoreTests: XCTestCase {
     private var directories: [URL] = []
+    private var preferenceSuites: [String] = []
+    private func isolatedDefaults() throws -> UserDefaults {
+        let suite = "StickeyCoreTests.autoLock.\(UUID().uuidString)"
+        preferenceSuites.append(suite)
+        return try XCTUnwrap(UserDefaults(suiteName: suite))
+    }
     private func directory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("StickeyCoreTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -13,6 +19,8 @@ final class NoteStoreTests: XCTestCase {
     override func tearDown() async throws {
         for directory in directories { try? FileManager.default.removeItem(at: directory) }
         directories = []
+        for suite in preferenceSuites { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        preferenceSuites = []
     }
 
     func testAutosaveRoundTripAndTrashRestore() async throws {
@@ -276,4 +284,288 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertEqual(store.notes[0].protectionUpdatedAt, date)
         XCTAssertEqual(store.notes[0].protectionRevisionID, revision)
     }
+
+    func testAutoLockPreferenceDefaultsToTwoMinutesAndPersistsOnDevice() throws {
+        let suite = "StickeyCoreTests.autoLock.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = NoteStore(directory: try directory(), seed: false, defaults: defaults)
+        XCTAssertEqual(store.autoLockSeconds, 120)
+        store.autoLockSeconds = 300
+        let reopened = NoteStore(directory: try directory(), seed: false, defaults: defaults)
+        XCTAssertEqual(reopened.autoLockSeconds, 300)
+        store.autoLockSeconds = .infinity
+        XCTAssertEqual(store.autoLockSeconds, 120)
+        XCTAssertEqual(NoteStore.autoLockOptions, [30, 60, 120, 300, 600, 900])
+    }
+
+    func testPINValidationEncryptionAndIncorrectPIN() async throws {
+        let store = NoteStore(directory: try directory(), seed: false, defaults: try isolatedDefaults())
+        let id = store.createNote()
+        store.updateNote(id) { $0.content.text = "Only after a PIN" }
+        for invalid in ["", "123", "1234567890123", "12a4", "１２３４", "1234 "] {
+            do { try await store.lockNote(id, pin: invalid); XCTFail("Invalid PIN must fail") }
+            catch { XCTAssertEqual(error as? NoteSecurityError, .invalidPIN) }
+        }
+        do { try await store.lockNote(id, password: "short"); XCTFail("Password validation remains unchanged") }
+        catch { XCTAssertEqual(error as? NoteSecurityError, .passwordTooShort) }
+        try await store.lockNote(id, pin: "0420")
+        XCTAssertTrue(store.isLocked(id))
+        XCTAssertFalse(String(decoding: try store.exportArchive(), as: UTF8.self).contains("Only after a PIN"))
+        do { try await store.unlockNote(id, password: "0421"); XCTFail("Incorrect PIN must fail") }
+        catch { XCTAssertEqual(error as? NoteSecurityError, .incorrectPassword) }
+        XCTAssertTrue(store.isLocked(id))
+        try await store.unlockNote(id, password: "0420")
+        XCTAssertEqual(store.notes.first?.content.text, "Only after a PIN")
+    }
+
+    func testAutoLockExpiresAtTwoMinutesAndRetainsLatestEncryptedEdits() async throws {
+        let store = NoteStore(directory: try directory(), seed: false, defaults: try isolatedDefaults())
+        var now = ContinuousClock.now
+        store.autoLockNow = { now }
+        let id = store.createNote()
+        store.updateNote(id) { $0.content.text = "Original secret" }
+        try await store.lockNote(id, pin: "1234")
+        try await store.unlockNote(id, password: "1234")
+        now = now.advanced(by: .seconds(119))
+        store.relockExpiredNotes()
+        XCTAssertFalse(store.isLocked(id))
+        store.updateNote(id) { $0.content.text = "Latest secret" }
+        now = now.advanced(by: .seconds(1))
+        store.relockExpiredNotes()
+        XCTAssertTrue(store.isLocked(id))
+        XCTAssertEqual(store.notes.first?.content, NoteContent())
+        XCTAssertTrue(store.notes.first?.history.isEmpty == true)
+        XCTAssertFalse(String(decoding: try store.exportArchive(), as: UTF8.self).contains("Latest secret"))
+        try await store.unlockNote(id, password: "1234")
+        XCTAssertEqual(store.notes.first?.content.text, "Latest secret")
+        now = now.advanced(by: .seconds(120))
+        store.updateNote(id) { $0.content.text = "An overdue editor write" }
+        XCTAssertTrue(store.isLocked(id))
+        try await store.unlockNote(id, password: "1234")
+        XCTAssertEqual(store.notes.first?.content.text, "Latest secret")
+    }
+
+    func testChangingAutoLockUsesOriginalAuthenticationTime() async throws {
+        let suite = "StickeyCoreTests.autoLock.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = NoteStore(directory: try directory(), seed: false, defaults: defaults)
+        var now = ContinuousClock.now
+        store.autoLockNow = { now }
+        let id = store.createNote()
+        try await store.lockNote(id, pin: "1234")
+        try await store.unlockNote(id, password: "1234")
+        now = now.advanced(by: .seconds(90))
+        store.autoLockSeconds = 300
+        now = now.advanced(by: .seconds(209))
+        store.relockExpiredNotes()
+        XCTAssertFalse(store.isLocked(id))
+        now = now.advanced(by: .seconds(1))
+        store.relockExpiredNotes()
+        XCTAssertTrue(store.isLocked(id))
+        try await store.unlockNote(id, password: "1234")
+        now = now.advanced(by: .seconds(61))
+        store.autoLockSeconds = 60
+        XCTAssertTrue(store.isLocked(id), "Shortening below elapsed time must lock immediately")
+        try await store.unlockNote(id, password: "1234")
+        now = now.advanced(by: .seconds(61))
+        store.autoLockSeconds = 300
+        XCTAssertTrue(store.isLocked(id), "Extending the setting cannot revive an already expired session")
+    }
+
+    func testProtectedDuplicateInheritsRemainingAutoLockTime() async throws {
+        let store = NoteStore(directory: try directory(), seed: false, defaults: try isolatedDefaults())
+        var now = ContinuousClock.now
+        store.autoLockNow = { now }
+        let id = store.createNote()
+        store.updateNote(id) { $0.content.text = "Private copy" }
+        try await store.lockNote(id, pin: "1234")
+        try await store.unlockNote(id, password: "1234")
+        now = now.advanced(by: .seconds(119))
+        let copy = try XCTUnwrap(store.duplicateNote(id))
+        XCTAssertFalse(store.isLocked(copy))
+        now = now.advanced(by: .seconds(1))
+        store.relockExpiredNotes()
+        XCTAssertTrue(store.isLocked(id))
+        XCTAssertTrue(store.isLocked(copy))
+        try await store.unlockNote(copy, password: "1234")
+        XCTAssertEqual(store.notes.first(where: { $0.id == copy })?.content.text, "Private copy")
+    }
+
+    func testScheduledAutoLockActuallyFiresWithoutInteraction() async throws {
+        let suite = "StickeyCoreTests.autoLock.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = NoteStore(directory: try directory(), seed: false, defaults: defaults)
+        var advance: Double = 0
+        store.autoLockNow = { ContinuousClock.now.advanced(by: .seconds(advance)) }
+        let id = store.createNote()
+        store.updateNote(id) { $0.content.text = "Hide without interaction" }
+        try await store.lockNote(id, pin: "1234")
+        try await store.unlockNote(id, password: "1234")
+        advance = 119.95
+        store.autoLockSeconds = 300
+        store.autoLockSeconds = 120
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !store.isLocked(id), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(store.isLocked(id))
+        XCTAssertEqual(store.notes.first?.content, NoteContent())
+    }
+
+    func testRelockRejectsCredentialRetrievedByAnEarlierBiometricPrompt() async throws {
+        let store = NoteStore(directory: try directory(), seed: false, defaults: try isolatedDefaults())
+        let id = store.createNote()
+        try await store.lockNote(id, pin: "1234")
+        let token = store.securityGenerationToken(for: id)
+        store.relockAll()
+        do {
+            try await store.unlockNote(id, password: "1234", expectedGeneration: token)
+            XCTFail("A biometric result from before a relock must not reopen the note")
+        } catch { XCTAssertEqual(error as? NoteSecurityError, .locked) }
+        XCTAssertTrue(store.isLocked(id))
+        try await store.unlockNote(id, password: "1234", expectedGeneration: store.securityGenerationToken(for: id))
+        XCTAssertFalse(store.isLocked(id))
+    }
+
+    func testRemovingProtectionCancelsTheAutoLockSession() async throws {
+        let store = NoteStore(directory: try directory(), seed: false, defaults: try isolatedDefaults())
+        var now = ContinuousClock.now
+        store.autoLockNow = { now }
+        let id = store.createNote()
+        store.updateNote(id) { $0.content.text = "Deliberately unprotected" }
+        try await store.lockNote(id, pin: "1234")
+        try await store.removePassword(id, password: "1234")
+        now = now.advanced(by: .seconds(120))
+        store.relockExpiredNotes()
+        XCTAssertFalse(store.isLocked(id))
+        XCTAssertFalse(store.notes[0].isPasswordProtected)
+        XCTAssertEqual(store.notes[0].content.text, "Deliberately unprotected")
+    }
+
+    func testAppleCredentialMetadataSurvivesEditsPersistenceAndImport() async throws {
+        let location = try directory()
+        let store = NoteStore(directory: location, seed: false, defaults: try isolatedDefaults())
+        let id = store.createNote(), credentialID = UUID()
+        let secret = "generated-apple-credential-for-testing-001"
+        store.updateNote(id) { $0.content = NoteContent(title: "Private Apple title", text: "Private Apple body") }
+        try await store.lockNoteWithAppleCredential(id, credential: secret, credentialID: credentialID)
+        XCTAssertTrue(store.isLocked(id))
+        XCTAssertTrue(store.notes[0].usesAppleAuthentication)
+        XCTAssertEqual(store.notes[0].encryptedContent?.credentialID, credentialID)
+        let archive = try store.exportArchive()
+        let text = String(decoding: archive, as: UTF8.self)
+        XCTAssertFalse(text.contains(secret))
+        XCTAssertFalse(text.contains("Private Apple"))
+        let imported = NoteStore(directory: try directory(), seed: false, defaults: try isolatedDefaults())
+        try imported.importArchive(archive)
+        XCTAssertEqual(imported.notes[0].encryptedContent?.credentialKind, "apple")
+        XCTAssertEqual(imported.notes[0].encryptedContent?.credentialID, credentialID)
+        try await store.unlockNote(id, password: secret)
+        store.updateNote(id) { $0.content.text = "Latest Apple edit" }
+        await store.flush()
+        XCTAssertEqual(store.notes[0].encryptedContent?.credentialID, credentialID)
+        let reopened = NoteStore(directory: location, seed: false, defaults: try isolatedDefaults())
+        XCTAssertTrue(reopened.notes[0].usesAppleAuthentication)
+        XCTAssertEqual(reopened.notes[0].encryptedContent?.credentialID, credentialID)
+        try await reopened.unlockNote(id, password: secret)
+        XCTAssertEqual(reopened.notes[0].content.text, "Latest Apple edit")
+    }
+
+    func testAppleProtectedDuplicateRetainsCredentialReferenceAndCiphertextBinding() async throws {
+        let store = NoteStore(directory: try directory(), seed: false, defaults: try isolatedDefaults())
+        let id = store.createNote(), credentialID = UUID()
+        let secret = "generated-apple-credential-for-testing-002"
+        store.updateNote(id) { $0.content.text = "Apple private duplicate" }
+        try await store.lockNoteWithAppleCredential(id, credential: secret, credentialID: credentialID)
+        try await store.unlockNote(id, password: secret)
+        let duplicate = try XCTUnwrap(store.duplicateNote(id))
+        XCTAssertTrue(store.notes.first(where: { $0.id == duplicate })?.usesAppleAuthentication == true)
+        XCTAssertEqual(store.notes.first(where: { $0.id == duplicate })?.encryptedContent?.credentialID, credentialID)
+        store.relockAll()
+        try await store.unlockNote(duplicate, password: secret)
+        XCTAssertEqual(store.notes.first(where: { $0.id == duplicate })?.content.text, "Apple private duplicate")
+        var tampered = try ArchiveCodec.decode(store.exportArchive())
+        let originalPayload = try XCTUnwrap(tampered.notes.first(where: { $0.id == id })?.encryptedContent)
+        let copiedIndex = try XCTUnwrap(tampered.notes.firstIndex(where: { $0.id == duplicate }))
+        tampered.notes[copiedIndex].encryptedContent = originalPayload
+        let other = NoteStore(directory: try directory(), seed: false, defaults: try isolatedDefaults())
+        try other.importArchive(ArchiveCodec.encode(tampered))
+        do { try await other.unlockNote(duplicate, password: secret); XCTFail("Copied ciphertext must remain bound to its note ID") }
+        catch { XCTAssertEqual(error as? NoteSecurityError, .incorrectPassword) }
+    }
+
+    func testLegacyConversionKeepsHistoryEncryptedAndRequiresCurrentAuthentication() async throws {
+        let location = try directory()
+        let store = NoteStore(directory: location, seed: false, defaults: try isolatedDefaults())
+        let id = store.createNote(), credentialID = UUID()
+        let secret = "generated-apple-credential-for-testing-003"
+        store.updateNote(id) { $0.content.text = "Legacy private history" }
+        store.updateNote(id) { $0.content.text = "Legacy private latest" }
+        try await store.lockNote(id, pin: "0412")
+        XCTAssertFalse(store.notes[0].usesAppleAuthentication)
+        let oldEpoch = try XCTUnwrap(store.notes[0].protectionUpdatedAt)
+        do {
+            try await store.convertToAppleAuthentication(id, credential: secret, credentialID: credentialID)
+            XCTFail("A locked legacy note cannot be converted")
+        } catch { XCTAssertEqual(error as? NoteSecurityError, .locked) }
+        try await store.unlockNote(id, password: "0412")
+        try await store.convertToAppleAuthentication(id, credential: secret, credentialID: credentialID,
+            expectedGeneration: store.securityGenerationToken(for: id))
+        XCTAssertTrue(store.isLocked(id))
+        XCTAssertGreaterThan(try XCTUnwrap(store.notes[0].protectionUpdatedAt), oldEpoch)
+        for filename in ["notes.json", "notes.backup.json"] {
+            let persisted = try String(contentsOf: location.appendingPathComponent(filename), encoding: .utf8)
+            XCTAssertFalse(persisted.contains("Legacy private"))
+            XCTAssertFalse(persisted.contains(secret))
+        }
+        do { try await store.unlockNote(id, password: "0412"); XCTFail("The old PIN must no longer decrypt a converted note") }
+        catch { XCTAssertEqual(error as? NoteSecurityError, .incorrectPassword) }
+        try await store.unlockNote(id, password: secret)
+        XCTAssertEqual(store.notes[0].content.text, "Legacy private latest")
+        XCTAssertTrue(store.notes[0].history.contains { $0.content.text == "Legacy private history" })
+    }
+
+    func testAppleConversionAndRemovalRejectStaleAuthentication() async throws {
+        let store = NoteStore(directory: try directory(), seed: false, defaults: try isolatedDefaults())
+        let id = store.createNote(), credentialID = UUID()
+        let secret = "generated-apple-credential-for-testing-004"
+        store.updateNote(id) { $0.content.text = "Retain on cancelled conversion" }
+        try await store.lockNote(id, pin: "1234")
+        try await store.unlockNote(id, password: "1234")
+        let token = store.securityGenerationToken(for: id)
+        let conversion = Task { try await store.convertToAppleAuthentication(id, credential: secret,
+            credentialID: credentialID, expectedGeneration: token) }
+        await Task.yield()
+        store.relockAll()
+        do { try await conversion.value; XCTFail("Relock must cancel an in-flight conversion") }
+        catch { XCTAssertEqual(error as? NoteSecurityError, .locked) }
+        XCTAssertFalse(store.notes[0].usesAppleAuthentication)
+        XCTAssertTrue(store.isLocked(id))
+        do { try await store.removePassword(id, password: "1234", expectedGeneration: token); XCTFail("Stale auth must not remove protection") }
+        catch { XCTAssertEqual(error as? NoteSecurityError, .locked) }
+        try await store.unlockNote(id, password: "1234")
+        XCTAssertEqual(store.notes[0].content.text, "Retain on cancelled conversion")
+    }
+
+    func testCredentialMetadataValidatesPairAndLegacyEncodingRemainsCompatible() throws {
+        let legacy = EncryptedNotePayload(salt: Data(repeating: 0, count: 16), iterations: 600_000,
+                                          sealedData: Data(repeating: 0, count: 32))
+        let note = StickyNote(encryptedContent: legacy)
+        let original = NoteArchive(notes: [note], groups: [])
+        let encoded = try ArchiveCodec.encode(original)
+        XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("credentialKind"))
+        XCTAssertEqual(try ArchiveCodec.decode(encoded).notes[0].encryptedContent, legacy)
+        for (kind, id) in [("apple", nil as UUID?), ("unexpected", UUID()), (nil as String?, UUID())] {
+            var archive = original
+            archive.notes[0].encryptedContent?.credentialKind = kind
+            archive.notes[0].encryptedContent?.credentialID = id
+            XCTAssertThrowsError(try ArchiveCodec.decode(ArchiveCodec.encode(archive))) { error in
+                XCTAssertEqual(error as? NoteSecurityError, .invalidArchive)
+            }
+        }
+    }
+
 }

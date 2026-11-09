@@ -4,11 +4,12 @@ import CommonCrypto
 import Security
 
 public enum NoteSecurityError: LocalizedError, Equatable {
-    case passwordTooShort, incorrectPassword, locked, unavailable, invalidArchive, newerArchive
+    case passwordTooShort, invalidPIN, incorrectPassword, locked, unavailable, invalidArchive, newerArchive
     public var errorDescription: String? {
         switch self {
         case .passwordTooShort: return "Use a password with at least 8 characters."
-        case .incorrectPassword: return "That password didn’t unlock this note."
+        case .invalidPIN: return "Use a PIN with 4 to 12 digits."
+        case .incorrectPassword: return "That PIN or password didn’t unlock this note."
         case .locked: return "Unlock the note before editing it."
         case .unavailable: return "The note could not be protected. Please try again."
         case .invalidArchive: return "This file is not a valid StickeyNote backup."
@@ -56,7 +57,9 @@ enum NoteCryptography {
         let data = try encoder.encode(body)
         let sealed = try AES.GCM.seal(data, using: key, authenticating: Data(note.id.uuidString.utf8))
         guard let combined = sealed.combined else { throw NoteSecurityError.unavailable }
-        return EncryptedNotePayload(salt: salt, iterations: iterations, sealedData: combined)
+        return EncryptedNotePayload(salt: salt, iterations: iterations, sealedData: combined,
+                                    credentialKind: note.encryptedContent?.credentialKind,
+                                    credentialID: note.encryptedContent?.credentialID)
     }
     static func decrypt(_ payload: EncryptedNotePayload, noteID: UUID, key: SymmetricKey) throws -> PrivateNoteBody {
         do {

@@ -16,7 +16,9 @@ Open http://127.0.0.1:5173. Serve the built `dist` directory over HTTPS in produ
 
 ## Features
 
-Notes and checklists, autosave, groups, search, sort, pins, recoverable trash, 25 colors, 16 font choices, rich text, drawing over note text, eraser/undo/PNG export, version history, password encryption, note-to-QR export, QR/image scanning, and full backup import/export. QR image scanning works offline through the bundled jsQR library. Other barcode formats use the browser’s `BarcodeDetector` where available.
+Notes and checklists, autosave, groups, search, sort, pins, recoverable trash, 25 colors, 16 font choices, rich text, drawing over note text, eraser/undo/PNG export, version history, PIN/password encryption with adjustable auto-lock, note-to-QR export, QR/image scanning, and full backup import/export. QR image scanning works offline through the bundled jsQR library. Other barcode formats use the browser’s `BarcodeDetector` where available.
+
+Choose **Lock note**, set a 4–12 digit PIN or a password of at least eight characters, and confirm it. Locked cards and editors show an **Unlock** button. Notes lock again two minutes after unlocking, even while editing. In Settings or lock settings, choose 30 seconds, 1, 2, 5, 10, or 15 minutes; this preference applies to protected notes in this browser and is saved locally. Notes locked with Apple’s built-in authentication open only in the native app on the Apple device that holds their protected key. The browser preserves these encrypted notes through import, backup, and sync, but cannot unlock them or request your Mac login password or device passcode. Browser-created locks continue to use a separate PIN or password.
 
 Keyboard shortcuts: Command/Control N for a note, T for a checklist, K/F for search. In checklists, Enter adds a row, Command/Control Enter checks it, and Command/Control Up/Down reorders it. Some browsers reserve new-tab/new-window shortcuts; the visible controls always work.
 
@@ -38,7 +40,7 @@ The Settings dialog renders Apple’s sign-in buttons. Data syncs to the signed-
 
 Browser storage keeps an atomic primary archive and a recovery copy. Export backups periodically, especially before clearing browser data. Storage quota or disabled storage errors are surfaced. Very large workspaces remain limited by the browser’s storage quota.
 
-Protected content and its history use PBKDF2-HMAC-SHA256 (600,000 iterations) and AES-256-GCM, interoperable with the native Swift app. Decrypted content stays in memory while unlocked and is cleared when the page goes into the background. Passwords are never stored; there is no password recovery. Exported backups retain encrypted envelopes. Copying, QR sharing, and exporting individual unlocked notes intentionally produce readable content.
+Protected content and its history use PBKDF2-HMAC-SHA256 (600,000 iterations) and AES-256-GCM, interoperable with the native Swift app. Decrypted content stays in memory while unlocked and is cleared at the auto-lock deadline or when the page goes into the background. PINs and passwords are never stored and cannot be recovered. Exported backups retain encrypted envelopes. Copying, QR sharing, and exporting individual unlocked notes intentionally produce readable content.
 
 Imports validate before applying and merge by identity, protection revision, edit time, and revision identifier. Deletions remain recoverable. The data schema is versioned; ordinary note data is not uploaded anywhere until the user connects iCloud or explicitly shares/exports it.
 

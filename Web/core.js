@@ -1,6 +1,17 @@
 // Shared, dependency-free document model. Its version-1 JSON is also understood
 // by the Swift app; all dates are milliseconds since the Unix epoch.
 export const STORAGE_KEY = 'stickeynote.archive.v1';
+export const AUTO_LOCK_OPTIONS = [30,60,120,300,600,900];
+export const DEFAULT_AUTO_LOCK_SECONDS = 120;
+function autoLockClock() {
+  let elapsed=0,wall=Date.now(),steady=globalThis.performance?.now()??wall;
+  return {
+    // Monotonic time prevents clock rollback extending access; wall time also
+    // accounts for sleep on browsers whose performance clock pauses in sleep.
+    now:()=>{const nextWall=Date.now(),nextSteady=globalThis.performance?.now()??nextWall;elapsed+=Math.max(0,nextWall-wall,nextSteady-steady);wall=nextWall;steady=nextSteady;return elapsed;},
+    setTimeout:(fn,delay)=>setTimeout(fn,delay),clearTimeout:timer=>clearTimeout(timer)
+  };
+}
 export const COLORS = [
   ['butter','F7E999'],['lemon','F9E35B'],['gold','F5CB63'],['peach','F8D0AD'],['apricot','F7B879'],
   ['coral','F49D8F'],['rose','ECA6AA'],['blush','F6D5D7'],['pink','F0BBDC'],['mauve','D8B3C9'],
@@ -80,7 +91,12 @@ function payloadValue(value) {
   if (value == null) return null;
   if (!Number.isInteger(value.iterations) || value.iterations < 100_000 || value.iterations > 2_000_000 || typeof value.salt !== 'string' || typeof value.sealedData !== 'string') throw invalid();
   if (fromBase64(value.salt).length !== 16 || fromBase64(value.sealedData).length < 28) throw invalid();
-  return {salt:value.salt,iterations:value.iterations,sealedData:value.sealedData};
+  const payload={salt:value.salt,iterations:value.iterations,sealedData:value.sealedData};
+  if(value.credentialKind!=null || value.credentialID!=null) {
+    if(value.credentialKind!=='apple' || value.credentialID==null)throw invalid();
+    payload.credentialKind='apple';payload.credentialID=normalizeID(value.credentialID);
+  }
+  return payload;
 }
 function noteValue(value) {
   if (!value || !['text','checklist'].includes(value.kind) || !COLORS.some(x=>x.id === value.color) || !FONTS.some(x=>x.id === value.font) || !Number.isFinite(value.fontSize) || value.fontSize < 8 || value.fontSize > 96 || typeof value.isPinned !== 'boolean' || !validDate(value.createdAt) || !validDate(value.updatedAt)) throw invalid();
@@ -129,7 +145,11 @@ async function seal(note,key,salt,iterations) {
   try {
     const encrypted = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv:nonce,additionalData:enc.encode(note.id.toUpperCase()),tagLength:128},key,plaintext));
     const combined = new Uint8Array(nonce.length+encrypted.length); combined.set(nonce); combined.set(encrypted,nonce.length);
-    return {salt:toBase64(salt),iterations,sealedData:toBase64(combined)};
+    const payload={salt:toBase64(salt),iterations,sealedData:toBase64(combined)};
+    if(note.encryptedContent?.credentialKind==='apple') {
+      payload.credentialKind='apple';payload.credentialID=note.encryptedContent.credentialID;
+    }
+    return payload;
   } finally { plaintext.fill(0); }
 }
 async function openEnvelope(note,key) {
@@ -139,7 +159,7 @@ async function openEnvelope(note,key) {
     clear = new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:bytes.subarray(0,12),additionalData:enc.encode(note.id.toUpperCase()),tagLength:128},key,bytes.subarray(12)));
     const value = JSON.parse(dec.decode(clear));
     return {content:contentValue(value.content),history:historyValue(value.history)};
-  } catch { throw new Error('That password didn’t unlock this note.'); }
+  } catch { throw new Error('That PIN or password didn’t unlock this note.'); }
   finally { clear?.fill(0); }
 }
 function persisted(note) {
@@ -167,10 +187,14 @@ export class NoteStore extends EventTarget {
     super();
     this.notes = []; this.groups = []; this.saveStatus = 'Saved on this device'; this.errorMessage = null;
     this._deletedGroups = []; this._keys = new Map(); this._generations = new Map(); this._revisions = new Map();
+    this._unlockedAt = new Map(); this._autoLockTimer = null;
+    this._clock = options.clock ?? autoLockClock();
     this._pending = new Set(); this._modifiedAt = Date.now(); this._revision = 0; this._savedRevision = 0;
     this._readOnly = false; this._replaceBackup = false; this._timer = null; this._key = options.key ?? STORAGE_KEY;
     try { this._storage = options.storage ?? globalThis.localStorage; }
     catch { this._storage = null; this.errorMessage = 'Browser storage is unavailable. Export a backup before closing.'; }
+    this._autoLockSeconds = DEFAULT_AUTO_LOCK_SECONDS;
+    try { const saved=Number(this._storage?.getItem(this._key+'.autoLockSeconds')); if(AUTO_LOCK_OPTIONS.includes(saved))this._autoLockSeconds=saved; } catch {}
     let raw = null;
     try { raw = this._storage?.getItem(this._key); }
     catch { this.errorMessage = 'Browser storage could not be read. Export a backup before closing.'; this._readOnly = true; }
@@ -185,13 +209,37 @@ export class NoteStore extends EventTarget {
     } else if (options.seed !== false && !this._readOnly) { this._load(sampleArchive()); this._changed(); }
     this._storageListener = event => {
       if (event.key === this._key && event.newValue) this.mergeArchive(event.newValue).catch(error=>this._fail(error));
+      if (event.key === this._key+'.autoLockSeconds') { const seconds=Number(event.newValue); this._applyAutoLockSeconds(AUTO_LOCK_OPTIONS.includes(seconds)?seconds:DEFAULT_AUTO_LOCK_SECONDS); }
     };
     if (options.listen !== false) globalThis.addEventListener?.('storage',this._storageListener);
   }
   _load(archive) { this.notes = archive.notes; this.groups = archive.groups.filter(x=>!x.deletedAt); this._deletedGroups = archive.groups.filter(x=>x.deletedAt); this._modifiedAt = archive.modifiedAt; }
   _note(id) { return this.notes.find(note=>note.id === id); }
   _generation(id) { return this._generations.get(id) ?? 0; }
-  _invalidate(id) { this._generations.set(id,this._generation(id)+1); this._keys.delete(id); }
+  _invalidate(id) { this._generations.set(id,this._generation(id)+1); this._keys.delete(id); this._unlockedAt.delete(id); this._scheduleAutoLock(); }
+  get autoLockSeconds() { return this._autoLockSeconds; }
+  set autoLockSeconds(seconds) {
+    if(!AUTO_LOCK_OPTIONS.includes(seconds))throw new Error('Choose an auto-lock time from 30 seconds to 15 minutes.');
+    this._applyAutoLockSeconds(seconds);
+    try { this._storage?.setItem(this._key+'.autoLockSeconds',String(seconds)); }
+    catch { throw new Error('The auto-lock time applies now, but could not be saved on this device.'); }
+  }
+  _applyAutoLockSeconds(seconds) {
+    // An expired authentication cannot be renewed by lengthening its duration.
+    this.lockExpiredNotes(); this._autoLockSeconds=seconds;
+    this.lockExpiredNotes(); this._scheduleAutoLock(); this._emit('settings');
+  }
+  _scheduleAutoLock() {
+    this._clock.clearTimeout(this._autoLockTimer); this._autoLockTimer=null;
+    if(!this._unlockedAt.size)return;
+    const deadline=Math.min(...this._unlockedAt.values())+this._autoLockSeconds*1000;
+    this._autoLockTimer=this._clock.setTimeout(()=>{this._autoLockTimer=null;this.lockExpiredNotes();this._scheduleAutoLock();},Math.max(0,deadline-this._clock.now()));
+    this._autoLockTimer?.unref?.();
+  }
+  lockExpiredNotes() {
+    const now=this._clock.now();
+    for(const [id,unlockedAt] of this._unlockedAt)if(now>=unlockedAt+this._autoLockSeconds*1000)this.relockNote(id);
+  }
   _replace(note) { const index=this.notes.findIndex(x=>x.id === note.id); if(index>=0) this.notes[index]=note; }
   _emit(type='change') { this.dispatchEvent(new Event(type)); }
   _changed() {
@@ -208,6 +256,7 @@ export class NoteStore extends EventTarget {
     const note = createNote(kind,groupID); this.notes.unshift(note); this._changed(); return note.id;
   }
   async updateNote(id,mutator) {
+    this.lockExpiredNotes();
     const old = this._note(id); if (!old) return;
     const next = copy(old); mutator(next);
     next.id = old.id; next.createdAt = old.createdAt; next.encryptedContent = old.encryptedContent;
@@ -240,6 +289,7 @@ export class NoteStore extends EventTarget {
   async deleteNote(id) { await this.updateNote(id,note=>note.deletedAt=Date.now()); }
   async restoreNote(id) { await this.updateNote(id,note=>note.deletedAt=null); }
   async duplicateNote(id) {
+    this.lockExpiredNotes();
     const source=this._note(id); if(!source) return null;
     if(this.isLocked(id)) throw new Error('Unlock the note before duplicating it.');
     const note=copy(source); note.id=newID(); note.createdAt=Date.now(); note.updatedAt=note.createdAt; note.revisionID=newID();note.deletedAt=null; note.history=[]; note.isPinned=false;
@@ -247,7 +297,8 @@ export class NoteStore extends EventTarget {
     if(note.encryptedContent) {
       const key=this._keys.get(id),generation=this._generation(id);
       note.encryptedContent=await seal(note,key,fromBase64(note.encryptedContent.salt),note.encryptedContent.iterations);
-      if(this._generation(id)===generation)this._keys.set(note.id,key);
+      this.lockExpiredNotes();
+      if(this._generation(id)===generation){this._keys.set(note.id,key);this._unlockedAt.set(note.id,this._unlockedAt.get(id));this._scheduleAutoLock();}
       else{note.content=emptyContent();note.history=[];}
     }
     this.notes.unshift(note); this._changed(); return note.id;
@@ -264,13 +315,15 @@ export class NoteStore extends EventTarget {
     this._changed();
   }
   async restoreSnapshot(noteID,snapshotID) {
+    this.lockExpiredNotes();
     const note=this._note(noteID); if(!note || this.isLocked(noteID))throw new Error('Unlock the note before restoring history.');
     const snapshot=note.history.find(x=>x.id===snapshotID);if(!snapshot)return;
     const current=copy(note.content);await this.updateNote(noteID,next=>{next.content=copy(snapshot.content);next.history.push({id:newID(),date:Date.now(),content:current});});
   }
   isLocked(id) { return Boolean(this._note(id)?.encryptedContent && !this._keys.has(id)); }
-  async lockNote(id,password) {
-    if([...password].length<8)throw new Error('Use a password with at least 8 characters.');
+  async lockNote(id,password,{credentialType='password'}={}) {
+    if(credentialType==='pin') { if(!/^[0-9]{4,12}$/.test(password))throw new Error('Use a PIN with 4 to 12 digits.'); }
+    else if(credentialType!=='password' || [...password].length<8)throw new Error('Use a password with at least 8 characters.');
     const note=this._note(id);if(!note)return;
     if(note.encryptedContent)throw new Error('This note already has a password.');
     const generation=this._generation(id),salt=crypto.getRandomValues(new Uint8Array(16));
@@ -283,14 +336,18 @@ export class NoteStore extends EventTarget {
     this._invalidate(id);this._replaceBackup=true;this._changed();await this.flush();
   }
   async unlockNote(id,password) {
+    this.lockExpiredNotes();
+    const generation=this._generation(id);
     await this._settle();
+    if(this._generation(id)!==generation)throw new Error('This note changed. Please unlock it again.');
     const note=this._note(id);if(!note?.encryptedContent)return;
-    const generation=this._generation(id), payload=note.encryptedContent;
+    const payload=note.encryptedContent;
+    if(payload.credentialKind==='apple')throw new Error('Open this note in the native Stickey Notes app on the Apple device where it was locked. Apple authentication is unavailable in this browser.');
     const key=await deriveKey(password,fromBase64(payload.salt),payload.iterations);
     const body=await openEnvelope(note,key);
     if(this._generation(id)!==generation || this._note(id)?.encryptedContent!==payload)throw new Error('This note changed. Please unlock it again.');
     const current=this._note(id);
-    this._keys.set(id,key);current.content=body.content;current.history=body.history;this._emit();
+    this._keys.set(id,key);this._unlockedAt.set(id,this._clock.now());this._scheduleAutoLock();current.content=body.content;current.history=body.history;this._emit();
   }
   relockNote(id) {
     const note=this._note(id);this._invalidate(id);
