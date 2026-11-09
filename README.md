@@ -41,6 +41,34 @@ This builds the **StickeyNotePreview** scheme and produces a signed local app wi
 
 If Xcode reports **PLA Update available**, the team's Account Holder must accept the latest agreement in the [Apple Developer account](https://developer.apple.com/account), then rerun the build. To use another configured team, pass `DEVELOPMENT_TEAM=YOUR_TEAM_ID` to the build script. A failed signing build leaves the existing app in place.
 
+### Publish a macOS release
+
+The local development app is restricted to registered Macs. Public downloads use a universal Developer ID release with hardened runtime, a distribution provisioning profile for Keychain access, and Apple notarization. The release keeps team `8ZA2YW2U9D`, bundle identifier `com.stickeynote.app.preview`, and the existing notes location. It includes the local Mac features; iCloud and widgets remain unavailable in this build.
+
+Run each stage from the repository root; the version defaults to `1.0.0` when omitted. Start with a local archive:
+
+```sh
+zsh scripts/release-mac.sh archive 1.0.0
+```
+
+The archive stays local until you explicitly submit it to Apple:
+
+```sh
+zsh scripts/release-mac.sh submit 1.0.0
+```
+
+After Apple accepts notarization, prepare the public download:
+
+```sh
+zsh scripts/release-mac.sh package 1.0.0
+```
+
+The **archive** stage builds both Apple silicon and Intel architectures. It refuses to replace an existing archive; continue with **submit**, or move the old archive aside to rebuild. The **submit** stage sends the app to Apple for Developer ID signing and notarization using the account configured in Xcode. Automatic signing may create the required distribution profile and cloud-managed certificate. The account needs Developer ID access: the team's Account Holder, or an Admin granted cloud-managed Developer ID signing access. See [Apple's Developer ID requirements](https://developer.apple.com/help/account/certificates/create-developer-id-certificates) and [notarization workflow](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
+
+The **package** stage exports the accepted, notarized archive and verifies both architectures, version, Developer ID signature, hardened runtime, secure timestamp, Keychain entitlements, all-device distribution provisioning, stapled notarization ticket, and Gatekeeper acceptance. If notarization is pending or any check fails, it produces no release ZIP. Check the archive in Xcode Organizer, resolve the reported issue, and rerun the appropriate stage. There is no development or ad-hoc signing fallback.
+
+Upload `build/release-v1.0.0/Stickey-Notes-v1.0.0-macOS-universal.zip` and `build/release-v1.0.0/SHA256SUMS.txt` to the matching GitHub release. The script prepares these files without publishing them. Existing release assets must be moved aside before packaging again. Test Apple note locking and unlocking in the exported app before publishing; signature verification cannot exercise the physical authentication prompt.
+
 ### iPhone / iPad / provisioned Mac
 
 Open `StickeyNote.xcodeproj`, choose the **StickeyNote** scheme, and select your device. In **Signing & Capabilities**, select your own development team for the app and widget targets and configure identifiers registered to your account, then Run. For iCloud and widgets, follow the configuration steps below.
