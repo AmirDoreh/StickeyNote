@@ -25,6 +25,12 @@ test('supports unicode URLs and explicit email actions',()=>{
   assert.equal(links[1].href,'mailto:hello@example.com?subject=Hello');
 });
 
+test('an at sign in a web path or query does not turn it into an email link',()=>{
+  assert.deepEqual(findLinks('example.com/@user example.com/?email=a@b.com hello@example.com').map(link=>link.href),[
+    'https://example.com/@user','https://example.com/?email=a@b.com','mailto:hello@example.com'
+  ]);
+});
+
 test('only permits supported external link protocols',()=>{
   for(const href of ['javascript:alert(1)','data:text/html,hello','file:///tmp/note','/settings','https://','https://exa mple.com','https:\n//example.com','mailto:invalid'])assert.equal(safeLinkURL(href),null,href);
   assert.equal(safeLinkURL('HTTP://example.com'),'http://example.com/');

@@ -1,6 +1,6 @@
 import { NoteStore, COLORS, FONTS, AUTO_LOCK_OPTIONS } from './core.js';
 import { createCloudSync } from './cloud.js';
-import { linkedTextHTML, safeLinkURL, updateAutomaticLinks } from './links.js';
+import { linkedTextHTML, safeLinkURL, updateAutomaticLinks, createRichTextHistory } from './links.js';
 
 const paths = {
   plus:'M12 5v14M5 12h14', note:'M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9l5-5V5a2 2 0 0 0-2-2h-4Zm1 18v-5h5M8 8h8M8 12h6',
@@ -31,6 +31,7 @@ let filter = 'all', query = '', sort = 'updated', view = 'grid', editorID = null
 let toastTimer, renderFrame, cloudMessage = 'Available with setup', modalCleanup = null, modalNoteID = null, modalSession = null;
 let drawingColor = '30362B', drawingWidth = 3, erasing = false, drawingUndo = [];
 const editor = $('#editor-dialog'), utility = $('#utility-dialog');
+let richTextHistory = null, composingText = false;
 const cloud = createCloudSync({getArchive: async () => { await store.flush(); return store.exportArchive(); }, mergeArchive: value => store.mergeArchive(typeof value === 'string' ? value : JSON.stringify(value)), onStatus(message) { cloudMessage = message; renderSidebar(); const label = $('#cloud-status'); if (label) label.textContent = message; }});
 const noteByID = id => store.notes.find(note => note.id === id);
 const currentNote = () => noteByID(editorID);
@@ -128,6 +129,7 @@ function sanitizeHTML(value) {
 }
 function openNote(id) { store.lockExpiredNotes(); editorID = id; drawingVisible = false; drawingUndo = []; renderEditor(); if (!editor.open) editor.showModal(); requestAnimationFrame(() => { if ($('#drawing-preview')) drawStrokes($('#drawing-preview'), currentNote()?.content.strokes || []); }); $('#sidebar').classList.remove('open'); }
 function renderEditor() {
+  richTextHistory?.clear(); richTextHistory = null; composingText = false;
   const note = currentNote(); if (!note) { editor.close(); return; }
   const locked = store.isLocked(note.id), color = colorFor(note);
   const tool = (action, glyph, label, extra='') => `<button class="icon-button ${extra}" data-action="${action}" data-id="${note.id}" title="${label}" aria-label="${label}">${icon(glyph,17)}</button>`;
@@ -138,6 +140,7 @@ function renderEditor() {
     <div id="drawing-area">${drawingVisible ? drawingMarkup() : note.content.strokes?.length ? '<canvas id="drawing-preview" class="drawing-canvas" style="height:140px;border:0;margin-top:20px;cursor:pointer" aria-label="Note sketch — click to edit"></canvas>' : ''}</div></div>
     <div class="editor-footer"><span id="editor-stats">${note.encryptedContent ? 'Encrypted · ' : ''}${note.kind === 'checklist' ? `${note.content.items.filter(item=>item.isCompleted).length} of ${note.content.items.length} completed` : `${note.content.text.trim().split(/\s+/).filter(Boolean).length} words`} · Saved as you go</span><div class="footer-actions"><button data-action="draw">${icon('draw',14)} ${drawingVisible ? 'Done drawing' : 'Make a sketch'}</button><button class="icon-button" data-action="share" title="Export note" aria-label="Export note">${icon('share',15)}</button></div></div>`}</div>`;
   updateAutomaticLinks($('#note-content'));
+  if ($('#note-content')) richTextHistory = createRichTextHistory($('#note-content'));
   if (!locked && drawingVisible) setupDrawing();
   else if (!locked && note.content.strokes?.length) { drawStrokes($('#drawing-preview'), note.content.strokes); $('#drawing-preview').addEventListener('click',()=>{drawingVisible=true;renderEditor();}); }
 }
@@ -147,7 +150,7 @@ function richToolbar(note) {
 function checklistRows(note) {
   return note.content.items.map((item,index)=>`<div class="checklist-row ${item.isCompleted?'completed':''}" data-item="${item.id}"><button class="check-toggle" data-action="editor-toggle" data-item="${item.id}" aria-label="${item.isCompleted?'Uncheck':'Check'} item">${item.isCompleted?icon('check',14):''}</button><input data-check-input="${item.id}" value="${attr(item.text)}" placeholder="Something to do…" aria-label="Checklist item ${index+1}"><div class="row-actions"><button data-action="item-up" data-item="${item.id}" aria-label="Move item up" ${index===0?'disabled':''}>${icon('up',13)}</button><button data-action="item-down" data-item="${item.id}" aria-label="Move item down" ${index===note.content.items.length-1?'disabled':''}>${icon('down',13)}</button><button data-action="item-delete" data-item="${item.id}" aria-label="Remove item">${icon('close',13)}</button></div></div>`).join('');
 }
-async function saveRichText(detectLinks=true) { const field=$('#note-content'); if (!field || !currentNote()) return; if (detectLinks) updateAutomaticLinks(field); await store.updateNote(editorID,note=>{note.content.text=field.innerText;note.content.richHTML=sanitizeHTML(field.innerHTML);note.content.richText=null;});const stats=$('#editor-stats');if(stats)stats.textContent=`${currentNote().encryptedContent?'Encrypted · ':''}${currentNote().content.text.trim().split(/\s+/).filter(Boolean).length} words · Saved as you go`; }
+async function saveRichText(detectLinks=true) { const field=$('#note-content'); if (!field || !currentNote()) return; if (detectLinks && !composingText) { updateAutomaticLinks(field); richTextHistory?.commit(); } await store.updateNote(editorID,note=>{note.content.text=field.innerText;note.content.richHTML=sanitizeHTML(field.innerHTML);note.content.richText=null;});const stats=$('#editor-stats');if(stats)stats.textContent=`${currentNote().encryptedContent?'Encrypted · ':''}${currentNote().content.text.trim().split(/\s+/).filter(Boolean).length} words · Saved as you go`; }
 
 function showModal(title, html, {submit, handler, cancel='Close', afterOpen, noteID=null, onCancel}={}) {
   retireModalSession();
@@ -277,8 +280,8 @@ async function scanImage(file) {
 
 document.addEventListener('click',async event=>{
   const link=event.target.closest('.note-content a[href],.note-preview a[href],.card-checklist a[href]');
-  if(link){event.preventDefault();event.stopPropagation();const href=safeLinkURL(link.getAttribute('href'));if(href)window.open(href,'_blank','noopener,noreferrer');return;}
-  const command=event.target.closest('[data-command]');if(command){event.preventDefault();$('#note-content')?.focus();document.execCommand(command.dataset.command,false,null);await saveRichText();return;}
+  if(link){event.preventDefault();event.stopPropagation();if(event.detail>1||event.altKey||!document.getSelection()?.isCollapsed)return;const href=safeLinkURL(link.getAttribute('href'));if(href)window.open(href,'_blank','noopener,noreferrer');return;}
+  const command=event.target.closest('[data-command]');if(command){event.preventDefault();$('#note-content')?.focus();if(['undo','redo'].includes(command.dataset.command))richTextHistory?.[command.dataset.command]();else{richTextHistory?.begin(command.dataset.command);document.execCommand(command.dataset.command,false,null);}await saveRichText();return;}
   const target=event.target.closest('[data-action]');
   if(!target){const card=event.target.closest('[data-note]');if(card)openNote(card.dataset.note);return;}
   const action=target.dataset.action,id=target.dataset.id||editorID,item=target.dataset.item;
@@ -322,16 +325,23 @@ document.addEventListener('click',async event=>{
   }}catch(error){report(error);}
 });
 document.addEventListener('pointerdown',event=>{if(event.target.closest('[data-command]'))event.preventDefault();});
+document.addEventListener('beforeinput',event=>{
+  if(event.target.id!=='note-content')return;
+  if(event.inputType==='historyUndo'||event.inputType==='historyRedo'){event.preventDefault();richTextHistory?.[event.inputType==='historyUndo'?'undo':'redo']();saveRichText().catch(report);}
+  else if(!composingText&&!event.isComposing)richTextHistory?.begin(event.inputType);
+});
+document.addEventListener('compositionstart',event=>{if(event.target.id==='note-content'){richTextHistory?.begin('composition');composingText=true;}});
 document.addEventListener('input',async event=>{try{if(event.target.id==='note-title')await store.updateNote(editorID,n=>n.content.title=event.target.value);else if(event.target.id==='note-content')await saveRichText(!event.isComposing);else if(event.target.dataset.checkInput){const item=event.target.dataset.checkInput,value=event.target.value;await store.updateNote(editorID,n=>{const row=n.content.items.find(row=>row.id===item);if(row)row.text=value;});}}catch(error){report(error);}});
-document.addEventListener('compositionend',event=>{if(event.target.id==='note-content')saveRichText().catch(report);});
+document.addEventListener('compositionend',event=>{if(event.target.id==='note-content'){composingText=false;saveRichText().catch(report);}});
 document.addEventListener('change',async event=>{try{if(event.target.id==='font-select'){await store.updateNote(editorID,n=>n.font=event.target.value);$('#note-content').style.fontFamily=fontFor(currentNote()).family||'inherit';}else if(event.target.id==='font-size'){await store.updateNote(editorID,n=>n.fontSize=Number(event.target.value));$('#note-content').style.fontSize=`${event.target.value}px`;}}catch(error){report(error);}});
 $('#search').addEventListener('input',event=>{query=event.target.value;visibleLimit=60;scheduleRender();});
 $('#sort').addEventListener('change',event=>{sort=event.target.value;scheduleRender();});
 $('#import-input').onchange=async event=>{const file=event.target.files[0];if(!file)return;try{if(file.size>100000000)throw Error('Choose a backup smaller than 100 MB.');await store.importArchive(await file.text());await store.flush();utility.close();toast('Your notes are back. Backup merged successfully.');}catch(error){report(error);}event.target.value='';};
 $('#scan-input').onchange=event=>{scanImage(event.target.files[0]);event.target.value='';};
-document.addEventListener('paste',event=>{if(event.target.closest('#note-content')){event.preventDefault();document.execCommand('insertText',false,event.clipboardData.getData('text/plain'));saveRichText();}});
+document.addEventListener('paste',event=>{if(event.target.closest('#note-content')){event.preventDefault();richTextHistory?.begin('insertFromPaste');document.execCommand('insertText',false,event.clipboardData.getData('text/plain'));saveRichText();}});
 document.addEventListener('keydown',event=>{
   const mod=event.metaKey||event.ctrlKey;
+  if(mod&&event.target.closest('#note-content')&&['z','y'].includes(event.key.toLowerCase())){event.preventDefault();richTextHistory?.[event.key.toLowerCase()==='y'||event.shiftKey?'redo':'undo']();saveRichText().catch(report);return;}
   if(event.key==='Enter'&&event.target.matches('.note-content a[href]')){event.preventDefault();event.target.click();return;}
   if(mod&&['n','t','k','f'].includes(event.key.toLowerCase())){event.preventDefault();if(utility.open)return;if(event.key.toLowerCase()==='n'||event.key.toLowerCase()==='t')openNote(store.createNote(event.key.toLowerCase()==='t'?'checklist':'text'));else{editor.close();$('#search').focus();}}
   if(event.target.matches('[data-note],[data-filter]')&&(event.key==='Enter'||event.key===' ')){event.preventDefault();event.target.click();}
@@ -341,7 +351,7 @@ document.addEventListener('dragstart',event=>{const card=event.target.closest('[
 document.addEventListener('dragover',event=>{const group=event.target.closest('[data-group]');if(group){event.preventDefault();group.classList.add('drop-target');}});
 document.addEventListener('dragleave',event=>event.target.closest('[data-group]')?.classList.remove('drop-target'));
 document.addEventListener('drop',async event=>{const group=event.target.closest('[data-group]');if(!group)return;event.preventDefault();group.classList.remove('drop-target');const id=event.dataTransfer.getData('text/x-stickey-note');if(noteByID(id)){await store.updateNote(id,n=>n.groupID=group.dataset.group);toast('Note moved.');}});
-editor.addEventListener('close',()=>{if(editor.open)return;editor.innerHTML='';editorID=null;drawingVisible=false;drawingUndo=[];store.flush().catch(report);scheduleRender();});
+editor.addEventListener('close',()=>{if(editor.open)return;richTextHistory?.clear();richTextHistory=null;composingText=false;editor.innerHTML='';editorID=null;drawingVisible=false;drawingUndo=[];store.flush().catch(report);scheduleRender();});
 document.addEventListener('visibilitychange',()=>{if(document.hidden){clearUtility();store.relockAll();store.flush().catch(report);if(editor.open)renderEditor();}else store.lockExpiredNotes();});
 window.addEventListener('focus',()=>store.lockExpiredNotes());
 window.addEventListener('pagehide',()=>{clearUtility();store.relockAll();store.flush().catch(report);});
