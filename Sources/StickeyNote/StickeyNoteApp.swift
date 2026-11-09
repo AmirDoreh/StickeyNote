@@ -52,7 +52,7 @@ struct StickeyNoteApp: App {
         BoardView(store: store)
             .modifier(InactiveNotePrivacy())
             .tint(Palette.ink)
-            .preferredColorScheme(.light)
+            .modifier(AppThemeModifier())
             #if os(macOS)
             .frame(minWidth: 760, minHeight: 560)
             #endif

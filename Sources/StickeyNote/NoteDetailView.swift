@@ -42,7 +42,12 @@ struct NoteDetailView: View {
                                     Button { tab = "draw" } label: { DrawingPreview(strokes: note.content.strokes).frame(height: 110).padding(.horizontal, 24) }.buttonStyle(.plain).help("Edit drawing")
                                 }
                             }
-                        }.background(Color(hex: note.color.hex).opacity(0.8))
+                        }
+                        .foregroundStyle(Palette.noteInk)
+                        .tint(Palette.noteInk)
+                        .background(Color(hex: note.color.hex).opacity(0.8))
+                        .background(Color(hex: "FAFAF7"))
+                        .environment(\.colorScheme, .light)
                     }
                     bottomBar(note)
                 }.background(Palette.paper).foregroundStyle(Palette.ink)
@@ -118,7 +123,7 @@ struct NoteDetailView: View {
                     Spacer()
                 }
             } else {
-                Text("\(note.content.items.filter(\.isCompleted).count) of \(note.content.items.count) completed").font(.system(size: 12)).foregroundStyle(Palette.ink.opacity(0.5))
+                Text("\(note.content.items.filter(\.isCompleted).count) of \(note.content.items.count) completed").font(.system(size: 12)).foregroundStyle(Palette.noteInk.opacity(0.5))
             }
         }.padding(.horizontal, 28).padding(.top, 26).padding(.bottom, 20)
     }
@@ -161,7 +166,7 @@ struct NoteDetailView: View {
                 ForEach(NoteColor.allCases) { color in
                     Button { store.updateNote(noteID) { $0.color = color } } label: {
                         Circle().fill(Color(hex: color.hex)).frame(width: 31, height: 31).overlay {
-                            if note.color == color { Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold)) }
+                            if note.color == color { Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.noteInk) }
                         }
                     }.buttonStyle(.plain).help(color.name).accessibilityLabel(color.name)
                 }
@@ -371,13 +376,17 @@ struct HistoryView: View {
                     ScrollView {
                         VStack(spacing: 7) {
                             ForEach(note.history.reversed()) { snapshot in
-                                Button { selected = snapshot.id } label: { VStack(alignment: .leading, spacing: 5) { Text(snapshot.date, format: .dateTime.month(.abbreviated).day().hour().minute()).font(.system(size: 12, weight: .medium)); Text(snapshot.content.title.isEmpty ? "Untitled note" : snapshot.content.title).font(.system(size: 11)).lineLimit(1) }.frame(maxWidth: .infinity, alignment: .leading).padding(12).background(selected == snapshot.id ? Palette.accent.opacity(0.5) : Palette.sidebar, in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain)
+                                Button { selected = snapshot.id } label: { VStack(alignment: .leading, spacing: 5) { Text(snapshot.date, format: .dateTime.month(.abbreviated).day().hour().minute()).font(.system(size: 12, weight: .medium)); Text(snapshot.content.title.isEmpty ? "Untitled note" : snapshot.content.title).font(.system(size: 11)).lineLimit(1) }.frame(maxWidth: .infinity, alignment: .leading).padding(12).background(selected == snapshot.id ? Palette.selection : Palette.sidebar, in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain)
                             }
                         }
                     }.frame(width: compact ? nil : 180).frame(maxHeight: compact ? 150 : nil)
                     if let snapshot = note.history.first(where: { $0.id == selected }) ?? note.history.last {
                         VStack(alignment: .leading, spacing: 15) {
-                            ScrollView { Text(snapshot.content.plainText).frame(maxWidth: .infinity, alignment: .leading).padding(18).textSelection(.enabled) }.background(Color(hex: note.color.hex).opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+                            ScrollView { Text(snapshot.content.plainText).frame(maxWidth: .infinity, alignment: .leading).padding(18).textSelection(.enabled) }
+                                .foregroundStyle(Palette.noteInk)
+                                .background(Color(hex: note.color.hex).opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+                                .background(Color(hex: "FAFAF7"), in: RoundedRectangle(cornerRadius: 12))
+                                .environment(\.colorScheme, .light)
                             Button("Restore this version") { store.restoreSnapshot(noteID: noteID, snapshotID: snapshot.id); dismiss() }.buttonStyle(PillButtonStyle(filled: true))
                         }
                     }

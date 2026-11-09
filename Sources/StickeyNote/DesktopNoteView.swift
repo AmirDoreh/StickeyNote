@@ -58,10 +58,12 @@ struct DesktopNoteView: View {
                 }
                 footer(note)
             }
-            .foregroundStyle(Palette.ink)
+            .foregroundStyle(Palette.noteInk)
             .background(Color(hex: note.color.hex))
-            .preferredColorScheme(.light)
+            .tint(Palette.noteInk)
+            .environment(\.colorScheme, .light)
             .sheet(isPresented: $showLock) { NoteLockSettingsView(store: store, noteID: noteID) }
+            .modifier(AppThemeModifier())
             .alert("Couldn’t complete that action", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
             .onChange(of: store.isLocked(noteID)) { _, locked in if locked { cancelUnlock() } }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
@@ -74,15 +76,15 @@ struct DesktopNoteView: View {
             .accessibilityHidden(!appActive && AppleNoteSecurity.isAuthenticating)
             .overlay {
                 if !appActive && AppleNoteSecurity.isAuthenticating {
-                    Label("Note hidden", systemImage: "lock.shield").frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(hex: note.color.hex))
+                    Label("Note hidden", systemImage: "lock.shield").foregroundStyle(Palette.noteInk).frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(hex: note.color.hex))
                 }
             }
         }
     }
     private func header(_ note: StickyNote) -> some View {
         HStack(spacing: 6) {
-            Button { desktop.unpin(noteID) } label: { Image(systemName: "xmark").font(.system(size: 10, weight: .medium)).frame(width: 18, height: 22) }.buttonStyle(.plain).foregroundStyle(Palette.ink.opacity(0.45)).help("Remove from desktop; keep the note").accessibilityLabel("Remove from desktop")
-            Text("ON YOUR DESKTOP").font(.system(size: 8, weight: .semibold)).tracking(1).foregroundStyle(Palette.ink.opacity(0.4))
+            Button { desktop.unpin(noteID) } label: { Image(systemName: "xmark").font(.system(size: 10, weight: .medium)).frame(width: 18, height: 22) }.buttonStyle(.plain).foregroundStyle(Palette.noteInk.opacity(0.45)).help("Remove from desktop; keep the note").accessibilityLabel("Remove from desktop")
+            Text("ON YOUR DESKTOP").font(.system(size: 8, weight: .semibold)).tracking(1).foregroundStyle(Palette.noteInk.opacity(0.4))
             Spacer()
             if !store.isLocked(noteID) {
                 Button {
@@ -129,13 +131,13 @@ struct DesktopNoteView: View {
                 ForEach(note.content.items) { item in
                     HStack(alignment: .top, spacing: 8) {
                         Button { store.updateNote(noteID) { n in if let i = n.content.items.firstIndex(where: { $0.id == item.id }) { n.content.items[i].isCompleted.toggle() } } } label: {
-                            Image(systemName: item.isCompleted ? "checkmark.square.fill" : "square").font(.system(size: 15)).foregroundStyle(Palette.ink.opacity(item.isCompleted ? 0.45 : 0.8))
+                            Image(systemName: item.isCompleted ? "checkmark.square.fill" : "square").font(.system(size: 15)).foregroundStyle(Palette.noteInk.opacity(item.isCompleted ? 0.45 : 0.8))
                         }.buttonStyle(.plain).accessibilityLabel("\(item.isCompleted ? "Uncheck" : "Complete") \(item.text)")
                         TextField("New item", text: Binding(get: { item.text }, set: { value in store.updateNote(noteID) { n in if let i = n.content.items.firstIndex(where: { $0.id == item.id }) { n.content.items[i].text = value } } }), axis: .vertical)
                             .textFieldStyle(.plain).font(.system(size: 13)).strikethrough(item.isCompleted).opacity(item.isCompleted ? 0.5 : 1)
                     }
                 }
-                Button { store.updateNote(noteID) { $0.content.items.append(ChecklistItem()) } } label: { Label("Add item", systemImage: "plus").font(.system(size: 11)) }.buttonStyle(.plain).foregroundStyle(Palette.ink.opacity(0.5)).padding(.top, 4)
+                Button { store.updateNote(noteID) { $0.content.items.append(ChecklistItem()) } } label: { Label("Add item", systemImage: "plus").font(.system(size: 11)) }.buttonStyle(.plain).foregroundStyle(Palette.noteInk.opacity(0.5)).padding(.top, 4)
             }.padding(.top, 5)
         }.scrollIndicators(.hidden)
     }
@@ -144,7 +146,7 @@ struct DesktopNoteView: View {
             Text(store.isLocked(noteID) ? "Locked" : note.isPasswordProtected ? "Auto-lock: \(NoteLockDuration.label(store.autoLockSeconds))" : store.saveStatus).font(.system(size: 9)).lineLimit(1)
             Spacer()
             Button { openMainNote() } label: { Image(systemName: "arrow.up.right.square").font(.system(size: 11)) }.buttonStyle(.plain).help("Open full editor").accessibilityLabel("Open full editor")
-        }.foregroundStyle(Palette.ink.opacity(0.4)).padding(.horizontal, 14).padding(.bottom, 10)
+        }.foregroundStyle(Palette.noteInk.opacity(0.4)).padding(.horizontal, 14).padding(.bottom, 10)
     }
     private func openMainNote() { desktop.openMainNote?(noteID) }
     private func content<T>(_ path: WritableKeyPath<NoteContent,T>, fallback: T) -> Binding<T> {

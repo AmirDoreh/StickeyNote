@@ -99,6 +99,8 @@ private struct NativeRichTextEditor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
+        // Rich text lives on the note's pastel paper in every app theme.
+        scroll.appearance = NSAppearance(named: .aqua)
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
@@ -299,6 +301,7 @@ private struct NativeRichTextEditor: UIViewRepresentable {
 
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView()
+        view.overrideUserInterfaceStyle = .light
         view.backgroundColor = .clear
         view.delegate = context.coordinator
         view.isEditable = true

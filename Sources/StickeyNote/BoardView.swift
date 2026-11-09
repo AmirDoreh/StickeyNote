@@ -158,7 +158,7 @@ struct BoardView: View {
                 Image(systemName: "sparkles").font(.system(size: 21, weight: .light)).foregroundStyle(Color(hex: "929C76"))
                 Text("Small notes.\nRoom for big ideas.").font(.system(size: 17, weight: .medium, design: .serif)).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
                 Text("A quieter place for your mind.").font(.system(size: 10)).foregroundStyle(Palette.secondary)
-            }.padding(17).frame(maxWidth: .infinity, alignment: .leading).background(Color.white.opacity(0.5), in: RoundedRectangle(cornerRadius: 12)).padding(16)
+            }.padding(17).frame(maxWidth: .infinity, alignment: .leading).background(Palette.surface.opacity(0.5), in: RoundedRectangle(cornerRadius: 12)).padding(16)
             navRow("Recently deleted", symbol: "trash", key: "trash", count: store.notes.filter { $0.deletedAt != nil }.count)
             HStack {
                 Button { settings = true } label: { Label("Settings", systemImage: "gearshape").font(.system(size: 12)) }.buttonStyle(.plain)
@@ -177,7 +177,7 @@ struct BoardView: View {
                 Text(label).font(.system(size: 13, weight: section == key ? .semibold : .regular)).lineLimit(1)
                 Spacer(minLength: 3)
                 if let count, count > 0 { Text("\(count)").font(.system(size: 11)).foregroundStyle(Palette.secondary) }
-            }.padding(.horizontal, 12).frame(height: 39).background(section == key ? Color(hex: "E3E6D9") : .clear, in: RoundedRectangle(cornerRadius: 8)).contentShape(Rectangle())
+            }.padding(.horizontal, 12).frame(height: 39).background(section == key ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 8)).contentShape(Rectangle())
         }.buttonStyle(.plain).padding(.horizontal, 12)
     }
     private func header(wide: Bool) -> some View {
@@ -194,7 +194,7 @@ struct BoardView: View {
                 Divider()
                 Button("Scan QR or barcode", systemImage: "qrcode.viewfinder") { scanner = true }
             } label: { HStack(spacing: 7) { Image(systemName: "plus"); Text("New note"); Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)) } }
-                .menuStyle(.borderlessButton).fixedSize().buttonStyle(PillButtonStyle(filled: true)).padding(10).background(Palette.accent, in: RoundedRectangle(cornerRadius: 9))
+                .menuStyle(.borderlessButton).fixedSize().buttonStyle(PillButtonStyle(filled: true)).foregroundStyle(Palette.accentInk).tint(Palette.accentInk).padding(10).background(Palette.accent, in: RoundedRectangle(cornerRadius: 9))
         }.padding(.horizontal, wide ? 30 : 20).padding(.top, wide ? 44 : 25).padding(.bottom, 26)
     }
     private var boardToolbar: some View {
@@ -206,12 +206,12 @@ struct BoardView: View {
     private var filters: some View {
         HStack(spacing: 4) {
             ForEach([("all", "All"), ("text", "Notes"), ("checklist", "Checklists")], id: \.0) { key, label in
-                Button { kindFilter = key } label: { Text(label).font(.system(size: 12, weight: .medium)).padding(.horizontal, 13).padding(.vertical, 7).foregroundStyle(kindFilter == key ? Palette.ink : Palette.secondary).background(kindFilter == key ? Color(hex: "EDEEE7") : .clear, in: RoundedRectangle(cornerRadius: 7)) }.buttonStyle(.plain)
+                Button { kindFilter = key } label: { Text(label).font(.system(size: 12, weight: .medium)).padding(.horizontal, 13).padding(.vertical, 7).foregroundStyle(kindFilter == key ? Palette.ink : Palette.secondary).background(kindFilter == key ? Palette.filter : .clear, in: RoundedRectangle(cornerRadius: 7)) }.buttonStyle(.plain)
             }
         }
     }
     private var searchField: some View {
-        HStack(spacing: 7) { Image(systemName: "magnifyingglass").foregroundStyle(Palette.secondary); TextField("Search your notes", text: $search).textFieldStyle(.plain).font(.system(size: 12)).focused($searchFocused); if !search.isEmpty { Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain) } }.padding(9).background(Color.white, in: RoundedRectangle(cornerRadius: 8)).overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.line)).accessibilityLabel("Search notes")
+        HStack(spacing: 7) { Image(systemName: "magnifyingglass").foregroundStyle(Palette.secondary); TextField("Search your notes", text: $search).textFieldStyle(.plain).font(.system(size: 12)).focused($searchFocused); if !search.isEmpty { Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain) } }.padding(9).background(Palette.surface, in: RoundedRectangle(cornerRadius: 8)).overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.line)).accessibilityLabel("Search notes")
     }
     private var sortMenu: some View {
         Menu { Picker("Sort by", selection: $sort) { Text("Last edited").tag("edited"); Text("Date created").tag("created"); Text("Title").tag("title") } } label: { Image(systemName: "arrow.up.arrow.down").frame(width: 28, height: 30) }.menuStyle(.borderlessButton).fixedSize().help("Sort notes")
@@ -267,26 +267,26 @@ struct NoteCard: View {
                 if note.isPinned { Image(systemName: "pin.fill").rotationEffect(.degrees(30)) }
                 if note.isPasswordProtected && !locked { Image(systemName: "lock.open") }
                 Button(action: onOpen) { Image(systemName: "arrow.up.right").opacity(hovering ? 1 : 0.3) }.buttonStyle(.plain).accessibilityLabel("Open \(note.displayTitle)")
-            }.font(.system(size: 11)).foregroundStyle(Palette.ink.opacity(0.56))
+            }.font(.system(size: 11)).foregroundStyle(Palette.noteInk.opacity(0.56))
             Text(locked ? "Note locked" : note.displayTitle).font(.system(size: compact ? 19 : 22, weight: .semibold, design: .rounded)).lineLimit(2).lineSpacing(2)
             if locked {
                 VStack(spacing: compact ? 6 : 12) {
                     if !compact { Image(systemName: "lock.shield").font(.system(size: 32, weight: .ultraLight)) }
                     Text("Unlock to view this note").font(.system(size: 12))
                     Button(action: onOpen) { Label("Unlock", systemImage: "lock.open").font(.system(size: 12, weight: .semibold)) }.buttonStyle(PillButtonStyle())
-                }.foregroundStyle(Palette.ink.opacity(0.7)).frame(maxWidth: .infinity, maxHeight: .infinity)
+                }.foregroundStyle(Palette.noteInk.opacity(0.7)).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if note.kind == .checklist {
                 VStack(alignment: .leading, spacing: 11) {
                     ForEach(note.content.items.prefix(compact ? 3 : 5)) { item in
                         HStack(alignment: .top, spacing: 9) {
-                            Button { onCheck(item.id) } label: { Image(systemName: item.isCompleted ? "checkmark.square.fill" : "square").font(.system(size: 16, weight: .light)).foregroundStyle(Palette.ink.opacity(item.isCompleted ? 0.45 : 0.75)) }.buttonStyle(.plain).accessibilityLabel("\(item.isCompleted ? "Uncheck" : "Complete") \(item.text)")
-                            Text(item.text).strikethrough(item.isCompleted).font(.system(size: 13)).foregroundStyle(Palette.ink.opacity(item.isCompleted ? 0.4 : 0.85)).lineLimit(2)
+                            Button { onCheck(item.id) } label: { Image(systemName: item.isCompleted ? "checkmark.square.fill" : "square").font(.system(size: 16, weight: .light)).foregroundStyle(Palette.noteInk.opacity(item.isCompleted ? 0.45 : 0.75)) }.buttonStyle(.plain).accessibilityLabel("\(item.isCompleted ? "Uncheck" : "Complete") \(item.text)")
+                            Text(item.text).strikethrough(item.isCompleted).font(.system(size: 13)).foregroundStyle(Palette.noteInk.opacity(item.isCompleted ? 0.4 : 0.85)).lineLimit(2)
                         }
                     }
-                    if note.content.items.count > 5 { Text("+ \(note.content.items.count - 5) more").font(.system(size: 10)).foregroundStyle(Palette.ink.opacity(0.5)) }
+                    if note.content.items.count > 5 { Text("+ \(note.content.items.count - 5) more").font(.system(size: 10)).foregroundStyle(Palette.noteInk.opacity(0.5)) }
                 }
             } else {
-                Text(linkedPreview).noteFont(note.font, size: 13).lineSpacing(6).lineLimit(compact ? 3 : note.content.strokes.isEmpty ? 7 : 3).foregroundStyle(Palette.ink.opacity(0.83))
+                Text(linkedPreview).noteFont(note.font, size: 13).lineSpacing(6).lineLimit(compact ? 3 : note.content.strokes.isEmpty ? 7 : 3).foregroundStyle(Palette.noteInk.opacity(0.83))
                 if !note.content.strokes.isEmpty && !compact { DrawingPreview(strokes: note.content.strokes).frame(height: 65) }
             }
             Spacer(minLength: 0)
@@ -295,14 +295,16 @@ struct NoteCard: View {
                 Spacer()
                 if note.kind == .checklist && !locked {
                     Text("\(note.content.items.filter(\.isCompleted).count) / \(note.content.items.count)").font(.system(size: 10, weight: .medium))
-                    Circle().trim(from: 0, to: CGFloat(note.content.items.filter(\.isCompleted).count) / CGFloat(max(1, note.content.items.count))).stroke(Palette.ink.opacity(0.6), style: StrokeStyle(lineWidth: 2, lineCap: .round)).rotationEffect(.degrees(-90)).background(Circle().stroke(Palette.ink.opacity(0.12), lineWidth: 2)).frame(width: 12, height: 12)
+                    Circle().trim(from: 0, to: CGFloat(note.content.items.filter(\.isCompleted).count) / CGFloat(max(1, note.content.items.count))).stroke(Palette.noteInk.opacity(0.6), style: StrokeStyle(lineWidth: 2, lineCap: .round)).rotationEffect(.degrees(-90)).background(Circle().stroke(Palette.noteInk.opacity(0.12), lineWidth: 2)).frame(width: 12, height: 12)
                 } else { Image(systemName: "ellipsis").font(.system(size: 14)) }
-            }.foregroundStyle(Palette.ink.opacity(0.45))
+            }.foregroundStyle(Palette.noteInk.opacity(0.45))
         }.padding(22).frame(maxWidth: .infinity, alignment: .topLeading).frame(height: compact ? 205 : 285)
+            .foregroundStyle(Palette.noteInk)
             .background(Color(hex: note.color.hex).gradient, in: RoundedRectangle(cornerRadius: 15))
-            .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(Palette.ink.opacity(0.025)))
-            .shadow(color: Palette.ink.opacity(hovering ? 0.09 : 0.025), radius: hovering ? 12 : 4, x: 0, y: hovering ? 5 : 2)
+            .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(Palette.noteInk.opacity(0.025)))
+            .shadow(color: Palette.noteInk.opacity(hovering ? 0.09 : 0.025), radius: hovering ? 12 : 4, x: 0, y: hovering ? 5 : 2)
             .contentShape(RoundedRectangle(cornerRadius: 15)).onTapGesture(perform: onOpen).onHover { hovering = $0 }
+            .environment(\.colorScheme, .light)
             .accessibilityElement(children: .contain)
     }
 

@@ -6,6 +6,7 @@ struct SettingsView: View {
     @Bindable var store: NoteStore
     @ObservedObject var sync: CloudKitSyncService
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(AppTheme.storageKey) private var theme: AppTheme = .automatic
     @State private var exporting = false
     @State private var importing = false
     @State private var archive = Data()
@@ -16,6 +17,14 @@ struct SettingsView: View {
             HStack { BrandMark(size: 42); VStack(alignment: .leading, spacing: 3) { Text("Make yourself at home.").font(.system(size: 23, weight: .semibold, design: .rounded)); Text("Stickey Notes · Settings").font(.system(size: 12)).foregroundStyle(Palette.secondary) }; Spacer(); IconButton(symbol: "xmark", help: "Close settings") { dismiss() } }.padding(26)
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
+                    section("APPEARANCE", symbol: "circle.lefthalf.filled") {
+                        Picker("Theme", selection: $theme) {
+                            ForEach(AppTheme.allCases) { theme in
+                                Text(theme.label).tag(theme)
+                            }
+                        }.pickerStyle(.segmented)
+                        Text("Auto follows your device’s appearance. Your choice is saved on this device.").font(.system(size: 11)).foregroundStyle(Palette.secondary)
+                    }
                     section("YOUR NOTES, EVERYWHERE", symbol: "icloud") {
                         Text("Keep Mac, iPhone, iPad, and the web in sync with your private iCloud account.").font(.system(size: 13)).foregroundStyle(Palette.secondary)
                         HStack {
@@ -51,6 +60,7 @@ struct SettingsView: View {
                 }.padding(.horizontal, 26).padding(.bottom, 26)
             }
         }.frame(idealWidth: 540, minHeight: 450, idealHeight: 650).background(Palette.paper).foregroundStyle(Palette.ink)
+            .modifier(AppThemeModifier())
             .fileExporter(isPresented: $exporting, document: ArchiveDocument(data: archive), contentType: .json, defaultFilename: "Stickey Notes Backup.json") { result in if case let .failure(e) = result { error = e.localizedDescription } }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
                 do { let url = try result.get(); let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }; try store.importArchive(Data(contentsOf: url)) } catch { self.error = error.localizedDescription }
@@ -58,7 +68,7 @@ struct SettingsView: View {
             .alert("Couldn’t complete that action", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
     }
     private func section<Content: View>(_ title: String, symbol: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 13) { Label(title, systemImage: symbol).font(.system(size: 10, weight: .semibold)).tracking(1.1); content() }.frame(maxWidth: .infinity, alignment: .leading).padding(18).background(.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Palette.line))
+        VStack(alignment: .leading, spacing: 13) { Label(title, systemImage: symbol).font(.system(size: 10, weight: .semibold)).tracking(1.1); content() }.frame(maxWidth: .infinity, alignment: .leading).padding(18).background(Palette.surface, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Palette.line))
     }
 }
 

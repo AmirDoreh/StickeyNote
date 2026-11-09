@@ -10,6 +10,7 @@ The native apps use SwiftUI, AppKit, and UIKit. The offline-capable web app uses
 
 - Notes and checklists with autosave, search, groups, pins, and grid/list layouts.
 - Rich text formatting, font choices, text sizing, and 25 note colors.
+- Light, Dark, and Auto themes in Settings. Auto follows your device’s appearance; preferences are saved locally and notes keep their chosen colors.
 - Drawing over note text with adjustable pens, an eraser, undo/redo, and PNG export.
 - Version history, restore, duplication, recoverable deletion, and JSON backup/import.
 - Encrypted native note locks using Apple’s system Touch ID / Face ID or device password/passcode prompt. Protected notes automatically lock after two minutes; choose 30 seconds to 15 minutes in Settings. Existing note PINs/passwords remain supported.
