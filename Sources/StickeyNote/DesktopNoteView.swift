@@ -16,6 +16,7 @@ struct DesktopNoteView: View {
     @State private var error: String?
     @State private var showLock = false
     @State private var unlockAttempt = UUID()
+    @FocusState private var focusedChecklistItem: UUID?
     private var note: StickyNote? { store.notes.first { $0.id == noteID } }
     private var isBusy: Bool { unlocking || appleTask != nil }
 
@@ -126,20 +127,55 @@ struct DesktopNoteView: View {
         }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 3)
     }
     private func compactChecklist(_ note: StickyNote) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 9) {
-                ForEach(note.content.items) { item in
-                    HStack(alignment: .top, spacing: 8) {
-                        Button { store.updateNote(noteID) { n in if let i = n.content.items.firstIndex(where: { $0.id == item.id }) { n.content.items[i].isCompleted.toggle() } } } label: {
-                            Image(systemName: item.isCompleted ? "checkmark.square.fill" : "square").font(.system(size: 15)).foregroundStyle(Palette.noteInk.opacity(item.isCompleted ? 0.45 : 0.8))
-                        }.buttonStyle(.plain).accessibilityLabel("\(item.isCompleted ? "Uncheck" : "Complete") \(item.text)")
-                        TextField("New item", text: Binding(get: { item.text }, set: { value in store.updateNote(noteID) { n in if let i = n.content.items.firstIndex(where: { $0.id == item.id }) { n.content.items[i].text = value } } }), axis: .vertical)
-                            .textFieldStyle(.plain).font(.system(size: 13)).strikethrough(item.isCompleted).opacity(item.isCompleted ? 0.5 : 1)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(note.content.items) { item in
+                        HStack(alignment: .top, spacing: 8) {
+                            Button { store.updateNote(noteID) { n in if let i = n.content.items.firstIndex(where: { $0.id == item.id }) { n.content.items[i].isCompleted.toggle() } } } label: {
+                                Image(systemName: item.isCompleted ? "checkmark.square.fill" : "square").font(.system(size: 15)).foregroundStyle(Palette.noteInk.opacity(item.isCompleted ? 0.45 : 0.8))
+                            }.buttonStyle(.plain).accessibilityLabel("\(item.isCompleted ? "Uncheck" : "Complete") \(item.text)")
+                            TextField("New item", text: checklistText(for: item.id), axis: .vertical)
+                                .textFieldStyle(.plain).font(.system(size: 13)).strikethrough(item.isCompleted).opacity(item.isCompleted ? 0.5 : 1)
+                                .focused($focusedChecklistItem, equals: item.id)
+                                .onSubmit { addChecklistItem(after: item.id) }
+                                .onKeyPress(keys: [.return], phases: .down) { event in
+                                    guard !event.modifiers.contains(.shift), !event.modifiers.contains(.command) else { return .ignored }
+                                    addChecklistItem(after: item.id)
+                                    return .handled
+                                }
+                                .accessibilityLabel("Checklist item")
+                        }
+                        .id(item.id)
                     }
+                    Button { addChecklistItem(after: note.content.items.last?.id) } label: { Label("Add item", systemImage: "plus").font(.system(size: 11)) }.buttonStyle(.plain).foregroundStyle(Palette.noteInk.opacity(0.5)).padding(.top, 4)
+                }.padding(.top, 5)
+            }
+            .scrollIndicators(.hidden)
+            .onChange(of: focusedChecklistItem) { _, id in
+                if let id { proxy.scrollTo(id) }
+            }
+        }
+    }
+    private func checklistText(for id: UUID) -> Binding<String> {
+        Binding(get: { note?.content.items.first(where: { $0.id == id })?.text ?? "" }, set: { value in
+            store.updateNote(noteID) { note in
+                if let index = note.content.items.firstIndex(where: { $0.id == id }) {
+                    note.content.items[index].text = value
                 }
-                Button { store.updateNote(noteID) { $0.content.items.append(ChecklistItem()) } } label: { Label("Add item", systemImage: "plus").font(.system(size: 11)) }.buttonStyle(.plain).foregroundStyle(Palette.noteInk.opacity(0.5)).padding(.top, 4)
-            }.padding(.top, 5)
-        }.scrollIndicators(.hidden)
+            }
+        })
+    }
+    private func addChecklistItem(after id: UUID?) {
+        let item = ChecklistItem()
+        store.updateNote(noteID) { note in
+            if let id, let index = note.content.items.firstIndex(where: { $0.id == id }) {
+                note.content.items.insert(item, at: index + 1)
+            } else {
+                note.content.items.append(item)
+            }
+        }
+        focusedChecklistItem = item.id
     }
     private func footer(_ note: StickyNote) -> some View {
         HStack {
